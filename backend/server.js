@@ -576,3 +576,175 @@ app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📱 SMS: ${ENABLE_SMS ? "ENABLED" : "DISABLED (console only)"}`);
 });
+
+
+
+// ===== CHILD OTP MODEL =====
+const ChildOtpSchema = new mongoose.Schema({
+  childPhone: {
+    type: String,
+    required: true
+  },
+  otpHash: {
+    type: String,
+    required: true
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now,
+    expires: 300 // 5 minutes
+  }
+});
+const ChildOtp = mongoose.model("ChildOtp", ChildOtpSchema);
+
+
+// ===== DB CONNECT =====
+mongoose
+  .connect(process.env.MONGO_URI)
+  .then(() => console.log("✅ MongoDB connected"))
+  .catch(err => console.error("MongoDB error:", err));
+
+// =====================================================
+// 1️⃣ PARENT REQUESTS CHILD TRACK (GENERATE CHILD OTP)
+// =====================================================
+app.post("/request-child-track", async (req, res) => {
+  try {
+    const { parentUsername, childPhone } = req.body;
+
+    // Validate parent-child mapping
+    const link = await ParentChild.findOne({
+      parentUsername,
+      childPhone
+    });
+
+    if (!link) {
+      return res.status(403).json({
+        error: "Unauthorized parent-child access"
+      });
+    }
+
+    // Generate OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpHash = crypto
+      .createHash("sha256")
+      .update(otp)
+      .digest("hex");
+
+    // Remove old OTPs for same child
+    await ChildOtp.deleteMany({ childPhone });
+
+    await ChildOtp.create({
+      childPhone,
+      otpHash
+    });
+
+    // 🔥 THIS IS THE LINE YOU ASKED FOR
+    console.log(`📱 CHILD TRACK OTP for ${childPhone}: ${otp}`);
+    console.log("⏳ Valid for 5 minutes");
+
+    res.json({ message: "Child OTP generated" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to generate child OTP" });
+  }
+});
+
+// =======================================
+// 2️⃣ CHILD VERIFIES OTP (CONSENT STEP)
+// =======================================
+app.post("/verify-child-otp", async (req, res) => {
+  try {
+    const { childPhone, otp } = req.body;
+
+    const record = await ChildOtp.findOne({ childPhone });
+    if (!record) {
+      return res.status(400).json({ error: "OTP expired" });
+    }
+
+    const hash = crypto
+      .createHash("sha256")
+      .update(otp)
+      .digest("hex");
+
+    if (hash !== record.otpHash) {
+      return res.status(401).json({ error: "Invalid OTP" });
+    }
+
+    console.log(`✅ CHILD OTP verified for ${childPhone}`);
+
+    res.json({ verified: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "OTP verification failed" });
+  }
+});
+
+// =======================================
+// 3️⃣ CHILD SENDS LOCATION (STORE IN DB)
+// =======================================
+app.post("/update-location", async (req, res) => {
+  try {
+    const { childPhone, latitude, longitude, accuracy } = req.body;
+
+    // Validate child exists in mapping
+    const link = await ParentChild.findOne({ childPhone });
+    if (!link) {
+      return res.status(403).json({
+        error: "Child not registered"
+      });
+    }
+
+    await ChildLocation.create({
+      childPhone,
+      latitude,
+      longitude,
+      accuracy
+    });
+
+    console.log(`📍 Location stored for ${childPhone}`);
+
+    res.json({ message: "Location stored successfully" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to store location" });
+  }
+});
+
+// ===================================================
+// 4️⃣ PARENT FETCHES CHILD LOCATION (AUTH CHECK)
+// ===================================================
+app.get(
+  "/parent/:username/child/:phone/location",
+  async (req, res) => {
+    try {
+      const { username, phone } = req.params;
+
+      const link = await ParentChild.findOne({
+        parentUsername: username,
+        childPhone: phone
+      });
+
+      if (!link) {
+        return res.status(403).json({
+          error: "Unauthorized access"
+        });
+      }
+
+      const location = await ChildLocation
+        .findOne({ childPhone: phone })
+        .sort({ createdAt: -1 });
+
+      if (!location) {
+        return res.status(404).json({
+          error: "No location data"
+        });
+      }
+
+      res.json(location);
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: "Failed to fetch location" });
+    }
+  }
+);
+

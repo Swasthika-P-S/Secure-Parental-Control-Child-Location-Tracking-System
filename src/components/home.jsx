@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import "./Home.css";
+import "./home.css";
 
 const API = "http://localhost:5000";
 
@@ -219,13 +219,6 @@ export default function Home({ userPhone, onNavigate }) {
       <div className="theme-toggle" onClick={() => setTheme(theme === "light" ? "dark" : "light")}>
         {theme === "light" ? "🌙 Dark" : "☀️ Light"}
       </div>
-
-      {/* Child Tracker Button */}
-      {onNavigate && (
-        <div className="child-tracker-link" onClick={() => onNavigate("child-tracker")}>
-          📱 Child Tracker App
-        </div>
-      )}
 
       <div className="animated-bg">
         <div className="circle circle-1"></div>

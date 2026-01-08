@@ -1,29 +1,31 @@
-// models/ChildLocation.js
 const mongoose = require("mongoose");
 
-const childLocationSchema = new mongoose.Schema({
-  childPhone: {
-    type: String,
-    required: true,
-    unique: true,
-    index: true
-  },
-  latitude: {
-    type: Number,
-    required: true
-  },
-  longitude: {
-    type: Number,
-    required: true
-  },
-  address: {
-    type: String,
-    default: ""
-  },
-  lastUpdated: {
-    type: Date,
-    default: Date.now
-  }
-});
+const ChildLocationSchema = new mongoose.Schema(
+  {
+    childPhone: {
+      type: String,
+      required: true,
+      index: true
+    },
 
-module.exports = mongoose.model("ChildLocation", childLocationSchema);
+    latitude: {
+      type: Number,
+      required: true
+    },
+
+    longitude: {
+      type: Number,
+      required: true
+    },
+
+    accuracy: {
+      type: Number,
+      default: null
+    }
+  },
+  {
+    timestamps: true
+  }
+);
+
+module.exports = mongoose.model("ChildLocation", ChildLocationSchema);

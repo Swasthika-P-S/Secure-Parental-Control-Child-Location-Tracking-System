@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Child Location Consent</title>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f9fafb;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+    }
+
+    .card {
+      background: white;
+      padding: 32px;
+      width: 380px;
+      border-radius: 14px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+    }
+
+    h2 {
+      text-align: center;
+      margin-bottom: 8px;
+    }
+
+    p {
+      text-align: center;
+      font-size: 14px;
+      color: #555;
+      margin-bottom: 20px;
+    }
+
+    label {
+      font-size: 13px;
+      font-weight: bold;
+      display: block;
+      margin-top: 12px;
+    }
+
+    input {
+      width: 100%;
+      padding: 12px;
+      margin-top: 6px;
+      border-radius: 8px;
+      border: 1px solid #ccc;
+      font-size: 14px;
+    }
+
+    .hint {
+      font-size: 12px;
+      color: #666;
+      margin-top: 4px;
+    }
+
+    button {
+      width: 100%;
+      padding: 12px;
+      margin-top: 20px;
+      background: #16a34a;
+      color: white;
+      border: none;
+      border-radius: 10px;
+      font-size: 15px;
+      cursor: pointer;
+    }
+
+    .status {
+      text-align: center;
+      margin-top: 14px;
+      font-size: 14px;
+      color: #15803d;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="card">
+    <h2>Share Location</h2>
+    <p>
+      Verify the OTP sent by parent request to securely share your location
+    </p>
+
+    <!-- PHONE NUMBER -->
+    <label>Registered Phone Number</label>
+    <input
+      id="phone"
+      placeholder="+91XXXXXXXXXX"
+    />
+    <div class="hint">
+      This must match the phone number registered by your parent
+    </div>
+
+    <!-- OTP COLUMN -->
+    <label>One-Time Password (OTP)</label>
+    <input
+      id="otp"
+      placeholder="Enter 6-digit OTP"
+    />
+    <div class="hint">
+      OTP is generated when parent clicks “Track”
+    </div>
+
+    <button onclick="verifyOtp()">Verify & Share Location</button>
+
+    <div class="status" id="status"></div>
+  </div>
+
+  <script>
+    function verifyOtp() {
+      const phone = document.getElementById("phone").value.trim();
+      const otp = document.getElementById("otp").value.trim();
+      const status = document.getElementById("status");
+
+      if (!phone || !otp) {
+        alert("Please enter both phone number and OTP");
+        return;
+      }
+
+      status.innerText = "Verifying OTP...";
+
+      fetch("http://localhost:5000/verify-child-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ childPhone: phone, otp })
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (!data.verified) {
+          status.innerText = "";
+          alert("Invalid or expired OTP");
+          return;
+        }
+
+        status.innerText = "OTP verified. Requesting location permission...";
+
+        navigator.geolocation.getCurrentPosition(
+          pos => {
+            fetch("http://localhost:5000/update-location", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                childPhone: phone,
+                latitude: pos.coords.latitude,
+                longitude: pos.coords.longitude,
+                accuracy: pos.coords.accuracy
+              })
+            })
+            .then(() => {
+              status.innerText = "✅ Location shared successfully";
+              setTimeout(() => window.close(), 2000);
+            });
+          },
+          () => {
+            alert("Location permission denied");
+          }
+        );
+      })
+      .catch(() => {
+        alert("Server error");
+      });
+    }
+  </script>
+</body>
+</html>

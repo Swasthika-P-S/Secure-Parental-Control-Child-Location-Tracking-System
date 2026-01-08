@@ -1,31 +1,33 @@
-// models/ParentChild.js
 const mongoose = require("mongoose");
 
-const parentChildSchema = new mongoose.Schema({
-  parentPhone: {
-    type: String,
-    required: true,
-    index: true
+const ParentChildSchema = new mongoose.Schema(
+  {
+    parentUsername: {
+      type: String,
+      required: true,
+      index: true
+    },
+
+    childName: {
+      type: String,
+      required: true
+    },
+
+    childPhone: {
+      type: String,
+      required: true,
+      index: true
+    }
   },
-  childPhone: {
-    type: String,
-    required: true
-  },
-  childName: {
-    type: String,
-    required: true
-  },
-  verified: {
-    type: Boolean,
-    default: true
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now
+  {
+    timestamps: true
   }
-});
+);
 
-// Create compound index for faster lookups
-parentChildSchema.index({ parentPhone: 1, childPhone: 1 }, { unique: true });
+// One parent cannot register the same child twice
+ParentChildSchema.index(
+  { parentUsername: 1, childPhone: 1 },
+  { unique: true }
+);
 
-module.exports = mongoose.model("ParentChild", parentChildSchema);
+module.exports = mongoose.model("ParentChild", ParentChildSchema);
