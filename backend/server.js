@@ -9,12 +9,13 @@ const User = require("./models/User");
 const Otp = require("./models/Otp");
 const ParentChild = require("./models/ParentChild");
 const ChildLocation = require("./models/ChildLocation");
+const ChildOtp = require("./models/ChildOtp");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// MongoDB
+// MongoDB Connection
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => console.log("✅ MongoDB Connected"))
@@ -23,7 +24,7 @@ mongoose
     process.exit(1);
   });
 
-// Twilio Configuration (optional - controlled by ENABLE_SMS flag)
+// Twilio Configuration
 const ENABLE_SMS = process.env.ENABLE_SMS === "true";
 let twilioClient = null;
 
@@ -41,7 +42,7 @@ if (ENABLE_SMS) {
   console.log("📱 SMS disabled - OTPs will be shown in console");
 }
 
-// Helper to send SMS (only if enabled)
+// Helper to send SMS
 const sendSMS = async (to, body) => {
   if (ENABLE_SMS && twilioClient) {
     try {
@@ -89,12 +90,12 @@ const validatePhone = (phone) => {
   return null;
 };
 
-// STEP 1: INITIATE SIGNUP (Send OTP)
+// ==================== AUTH ENDPOINTS ====================
+
 app.post("/signup/send-otp", async (req, res) => {
   try {
     const { username, password, phone } = req.body;
 
-    // Validate inputs
     const usernameError = validateUsername(username);
     if (usernameError) {
       return res.status(400).json({ error: usernameError });
@@ -112,7 +113,6 @@ app.post("/signup/send-otp", async (req, res) => {
 
     const cleanPhone = phone.replace(/[\s-]/g, '');
 
-    // Check if user already exists
     const existingUser = await User.findOne({ 
       $or: [
         { username: username.trim().toLowerCase() },
@@ -127,20 +127,16 @@ app.post("/signup/send-otp", async (req, res) => {
       return res.status(409).json({ error: "Phone number already registered" });
     }
 
-    // Generate 6-digit OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const otpHash = crypto.createHash("sha256").update(otp).digest("hex");
 
-    // Store password hash temporarily with OTP
     const passwordHash = crypto
       .createHash("sha256")
       .update(password)
       .digest("hex");
 
-    // Delete any existing OTP for this phone
     await Otp.deleteMany({ phone: cleanPhone });
 
-    // Store OTP with pending user data
     await Otp.create({ 
       phone: cleanPhone, 
       otpHash,
@@ -151,13 +147,11 @@ app.post("/signup/send-otp", async (req, res) => {
       expiresAt: new Date(Date.now() + 5 * 60 * 1000)
     });
 
-    // Log OTP to console
     console.log(`\n${"=".repeat(50)}`);
     console.log(`📝 SIGNUP OTP for ${cleanPhone}: ${otp}`);
     console.log(`⏰ Valid for 5 minutes`);
     console.log(`${"=".repeat(50)}\n`);
 
-    // Send OTP via SMS (if enabled)
     await sendSMS(cleanPhone, `Your signup verification code is ${otp}. Valid for 5 minutes.`);
 
     res.json({
@@ -172,7 +166,6 @@ app.post("/signup/send-otp", async (req, res) => {
   }
 });
 
-// STEP 2: VERIFY OTP & COMPLETE SIGNUP
 app.post("/signup/verify-otp", async (req, res) => {
   try {
     const { phone, otp } = req.body;
@@ -185,31 +178,26 @@ app.post("/signup/verify-otp", async (req, res) => {
       return res.status(400).json({ error: "OTP must be 6 digits" });
     }
 
-    // Find OTP record
     const record = await Otp.findOne({ phone });
     
     if (!record) {
       return res.status(400).json({ error: "OTP not found or expired" });
     }
 
-    // Check if it has pending user data
     if (!record.pendingUser) {
       return res.status(400).json({ error: "Invalid OTP request" });
     }
 
-    // Check expiry
     if (record.expiresAt && record.expiresAt < new Date()) {
       await Otp.deleteOne({ phone });
       return res.status(400).json({ error: "OTP has expired" });
     }
 
-    // Verify OTP
     const otpHash = crypto.createHash("sha256").update(otp).digest("hex");
     if (otpHash !== record.otpHash) {
       return res.status(401).json({ error: "Invalid OTP" });
     }
 
-    // Create user account
     await User.create({ 
       username: record.pendingUser.username, 
       passwordHash: record.pendingUser.passwordHash, 
@@ -217,7 +205,6 @@ app.post("/signup/verify-otp", async (req, res) => {
       verified: true
     });
 
-    // Delete OTP record
     await Otp.deleteOne({ phone });
 
     console.log(`✅ User created and verified: ${record.pendingUser.username} (${phone})`);
@@ -233,7 +220,6 @@ app.post("/signup/verify-otp", async (req, res) => {
   }
 });
 
-// LOGIN → SEND OTP
 app.post("/login", async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -242,7 +228,6 @@ app.post("/login", async (req, res) => {
       return res.status(400).json({ error: "Username and password are required" });
     }
 
-    // Find user (case insensitive)
     const user = await User.findOne({ 
       username: username.trim().toLowerCase() 
     });
@@ -251,33 +236,27 @@ app.post("/login", async (req, res) => {
       return res.status(401).json({ error: "Invalid username or password" });
     }
 
-    // Verify password
     const hash = crypto.createHash("sha256").update(password).digest("hex");
     if (hash !== user.passwordHash) {
       return res.status(401).json({ error: "Invalid username or password" });
     }
 
-    // Generate 6-digit OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const otpHash = crypto.createHash("sha256").update(otp).digest("hex");
 
-    // Delete any existing OTP for this phone
     await Otp.deleteMany({ phone: user.phone });
 
-    // Store new OTP (without pending user data for login)
     await Otp.create({ 
       phone: user.phone, 
       otpHash,
       expiresAt: new Date(Date.now() + 5 * 60 * 1000)
     });
 
-    // Log OTP to console
     console.log(`\n${"=".repeat(50)}`);
     console.log(`🔐 LOGIN OTP for ${user.phone}: ${otp}`);
     console.log(`⏰ Valid for 5 minutes`);
     console.log(`${"=".repeat(50)}\n`);
 
-    // Send OTP via SMS (if enabled)
     await sendSMS(user.phone, `Your login verification code is ${otp}. Valid for 5 minutes.`);
 
     res.json({
@@ -292,7 +271,6 @@ app.post("/login", async (req, res) => {
   }
 });
 
-// VERIFY LOGIN OTP
 app.post("/verify-otp", async (req, res) => {
   try {
     const { phone, otp } = req.body;
@@ -305,31 +283,26 @@ app.post("/verify-otp", async (req, res) => {
       return res.status(400).json({ error: "OTP must be 6 digits" });
     }
 
-    // Find OTP record
     const record = await Otp.findOne({ phone });
     
     if (!record) {
       return res.status(400).json({ error: "OTP not found or expired" });
     }
 
-    // Make sure this is a login OTP (no pending user data)
     if (record.pendingUser) {
       return res.status(400).json({ error: "Please use signup verification endpoint" });
     }
 
-    // Check expiry
     if (record.expiresAt && record.expiresAt < new Date()) {
       await Otp.deleteOne({ phone });
       return res.status(400).json({ error: "OTP has expired" });
     }
 
-    // Verify OTP
     const otpHash = crypto.createHash("sha256").update(otp).digest("hex");
     if (otpHash !== record.otpHash) {
       return res.status(401).json({ error: "Invalid OTP" });
     }
 
-    // Delete OTP after successful verification
     await Otp.deleteOne({ phone });
 
     console.log(`✅ Login OTP verified for ${phone}`);
@@ -345,7 +318,8 @@ app.post("/verify-otp", async (req, res) => {
   }
 });
 
-// REGISTER PARENT-CHILD RELATIONSHIP (One-time setup with OTP)
+// ==================== PARENT-CHILD REGISTRATION ====================
+
 app.post("/register-child", async (req, res) => {
   try {
     const { parentPhone, childPhone, childName } = req.body;
@@ -362,7 +336,6 @@ app.post("/register-child", async (req, res) => {
     const cleanParentPhone = parentPhone.replace(/[\s-]/g, '');
     const cleanChildPhone = childPhone.replace(/[\s-]/g, '');
 
-    // Check if relationship already exists
     const existing = await ParentChild.findOne({
       parentPhone: cleanParentPhone,
       childPhone: cleanChildPhone
@@ -372,11 +345,9 @@ app.post("/register-child", async (req, res) => {
       return res.status(409).json({ error: "This child is already registered" });
     }
 
-    // Generate OTP for parent verification
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const otpHash = crypto.createHash("sha256").update(otp).digest("hex");
 
-    // Store OTP with pending registration data
     await Otp.deleteMany({ phone: cleanParentPhone });
     await Otp.create({
       phone: cleanParentPhone,
@@ -408,7 +379,6 @@ app.post("/register-child", async (req, res) => {
   }
 });
 
-// VERIFY PARENT & COMPLETE REGISTRATION
 app.post("/verify-parent", async (req, res) => {
   try {
     const { parentPhone, otp } = req.body;
@@ -438,8 +408,11 @@ app.post("/verify-parent", async (req, res) => {
       return res.status(401).json({ error: "Invalid OTP" });
     }
 
-    // Create parent-child relationship
+    // Find parent username from User collection
+    const parentUser = await User.findOne({ phone: record.pendingRegistration.parentPhone });
+    
     await ParentChild.create({
+      parentUsername: parentUser ? parentUser.username : "unknown",
       parentPhone: record.pendingRegistration.parentPhone,
       childPhone: record.pendingRegistration.childPhone,
       childName: record.pendingRegistration.childName,
@@ -461,7 +434,6 @@ app.post("/verify-parent", async (req, res) => {
   }
 });
 
-// GET PARENT'S REGISTERED CHILDREN
 app.post("/my-children", async (req, res) => {
   try {
     const { parentPhone } = req.body;
@@ -487,7 +459,305 @@ app.post("/my-children", async (req, res) => {
   }
 });
 
-// GET CHILD'S LOCATION
+// ==================== LOCATION TRACKING ====================
+
+// 1️⃣ PARENT REQUESTS CHILD TRACK (GENERATE CHILD OTP & SEND SMS)
+app.post("/request-child-track", async (req, res) => {
+  try {
+    const { parentPhone, childPhone } = req.body;
+
+    if (!parentPhone || !childPhone) {
+      return res.status(400).json({ error: "Parent and child phone required" });
+    }
+
+    const cleanParentPhone = parentPhone.replace(/[\s-]/g, '');
+    const cleanChildPhone = childPhone.replace(/[\s-]/g, '');
+
+    // Verify parent-child relationship
+    const link = await ParentChild.findOne({
+      parentPhone: cleanParentPhone,
+      childPhone: cleanChildPhone
+    });
+
+    if (!link) {
+      return res.status(403).json({
+        error: "Unauthorized parent-child access"
+      });
+    }
+
+    // Generate OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpHash = crypto
+      .createHash("sha256")
+      .update(otp)
+      .digest("hex");
+
+    // Delete any existing OTPs for this child
+    await ChildOtp.deleteMany({ childPhone: cleanChildPhone });
+
+    // Store OTP with expiration
+    const otpRecord = await ChildOtp.create({
+      childPhone: cleanChildPhone,
+      otpHash,
+      expiresAt: new Date(Date.now() + 5 * 60 * 1000)
+    });
+
+    console.log(`✅ OTP stored in database for child: ${cleanChildPhone}`);
+
+    // Log to console
+    console.log(`\n${"=".repeat(50)}`);
+    console.log(`📱 CHILD TRACK OTP for ${cleanChildPhone}: ${otp}`);
+    console.log(`👨‍👧 Requested by parent: ${cleanParentPhone}`);
+    console.log(`⏰ Valid for 5 minutes`);
+    console.log(`${"=".repeat(50)}\n`);
+
+    // Send SMS to child
+    const smsBody = `Your parent (${cleanParentPhone.slice(-4)}) has requested to track your location. Your verification code is ${otp}. Valid for 5 minutes. Open http://localhost:5173/child-gps.html to consent.`;
+    const smsSent = await sendSMS(cleanChildPhone, smsBody);
+
+    console.log(`\n📱 Send this link to child: http://localhost:5173/child-gps.html`);
+    console.log(`📱 OTP for child (${cleanChildPhone}): ${otp}\n`);
+
+    res.json({ 
+      success: true,
+      message: ENABLE_SMS && smsSent 
+        ? `OTP sent to child's phone ending in ${cleanChildPhone.slice(-4)}`
+        : `SMS disabled. OTP: ${otp}`,
+      childPhone: cleanChildPhone,
+      phoneHint: cleanChildPhone.slice(-4),
+      smsEnabled: ENABLE_SMS,
+      otp: ENABLE_SMS ? undefined : otp,  // Show OTP in response if SMS disabled
+      gpsLink: "http://localhost:5173/child-gps.html",
+      instructions: "Child should open the GPS link, enter parent's phone number and the OTP received"
+    });
+  } catch (err) {
+    console.error("Request child track error:", err);
+    res.status(500).json({ error: "Failed to generate child OTP" });
+  }
+});
+
+// 2️⃣ CHILD VERIFIES WITH PARENT PHONE + OTP (CORRECT FLOW)
+app.post("/verify-child-consent", async (req, res) => {
+  try {
+    const { parentPhone, otp } = req.body;
+
+    if (!parentPhone || !otp) {
+      return res.status(400).json({ error: "Parent phone and OTP required" });
+    }
+
+    if (!/^\d{6}$/.test(otp)) {
+      return res.status(400).json({ error: "OTP must be 6 digits" });
+    }
+
+    const cleanParentPhone = parentPhone.replace(/[\s-]/g, '');
+
+    // Step 1: Find parent-child relationship
+    const parentChildLink = await ParentChild.findOne({ 
+      parentPhone: cleanParentPhone 
+    });
+
+    if (!parentChildLink) {
+      return res.status(403).json({ 
+        error: "Parent-child relationship not found. Please register first." 
+      });
+    }
+
+    const childPhone = parentChildLink.childPhone;
+
+    // Step 2: Check if child has pending OTP
+    const otpRecord = await ChildOtp.findOne({ childPhone: childPhone });
+    
+    if (!otpRecord) {
+      return res.status(400).json({ 
+        error: "No tracking request found. Ask your parent to request tracking again." 
+      });
+    }
+
+    // Step 3: Check expiration
+    if (otpRecord.expiresAt && otpRecord.expiresAt < new Date()) {
+      await ChildOtp.deleteOne({ childPhone: childPhone });
+      return res.status(400).json({ 
+        error: "OTP has expired. Ask your parent to request tracking again." 
+      });
+    }
+
+    // Step 4: Verify OTP hash
+    const hash = crypto
+      .createHash("sha256")
+      .update(otp)
+      .digest("hex");
+
+    if (hash !== otpRecord.otpHash) {
+      return res.status(401).json({ error: "Invalid OTP. Please check and try again." });
+    }
+
+    // Step 5: OTP verified - Delete it (one-time use)
+    await ChildOtp.deleteOne({ childPhone: childPhone });
+
+    console.log(`✅ Child consent verified - Parent: ${cleanParentPhone}, Child: ${childPhone}`);
+
+    res.json({ 
+      verified: true,
+      childPhone: childPhone,
+      parentPhone: cleanParentPhone,
+      childName: parentChildLink.childName,
+      message: "Consent verified. Location will be shared."
+    });
+
+  } catch (err) {
+    console.error("Verify child consent error:", err);
+    res.status(500).json({ error: "Verification failed. Please try again." });
+  }
+});
+
+// 2️⃣ (OLD ENDPOINTS - KEEPING FOR BACKWARD COMPATIBILITY)
+app.post("/verify-child-otp-with-parent", async (req, res) => {
+  try {
+    const { childPhone, otp } = req.body;
+
+    if (!childPhone || !otp) {
+      return res.status(400).json({ error: "Child phone and OTP required" });
+    }
+
+    if (!/^\d{6}$/.test(otp)) {
+      return res.status(400).json({ error: "OTP must be 6 digits" });
+    }
+
+    const cleanChildPhone = childPhone.replace(/[\s-]/g, '');
+
+    const record = await ChildOtp.findOne({ childPhone: cleanChildPhone });
+    if (!record) {
+      return res.status(400).json({ error: "OTP expired or not found. Ask your parent to request tracking again." });
+    }
+
+    if (record.expiresAt && record.expiresAt < new Date()) {
+      await ChildOtp.deleteOne({ childPhone: cleanChildPhone });
+      return res.status(400).json({ error: "OTP has expired. Ask your parent to request tracking again." });
+    }
+
+    const hash = crypto
+      .createHash("sha256")
+      .update(otp)
+      .digest("hex");
+
+    if (hash !== record.otpHash) {
+      return res.status(401).json({ error: "Invalid OTP. Please check and try again." });
+    }
+
+    const parentChildLink = await ParentChild.findOne({ 
+      childPhone: cleanChildPhone 
+    });
+
+    if (!parentChildLink) {
+      return res.status(403).json({ 
+        error: "No parent-child relationship found. Please register with your parent first." 
+      });
+    }
+
+    await ChildOtp.deleteOne({ childPhone: cleanChildPhone });
+
+    console.log(`✅ CHILD OTP verified for ${cleanChildPhone} - Parent: ${parentChildLink.parentPhone}`);
+
+    res.json({ 
+      verified: true,
+      parentPhone: parentChildLink.parentPhone,
+      parentName: parentChildLink.childName ? `Parent of ${parentChildLink.childName}` : "Your Parent",
+      childName: parentChildLink.childName,
+      message: "OTP verified successfully. You can now share your location."
+    });
+  } catch (err) {
+    console.error("Verify child OTP error:", err);
+    res.status(500).json({ error: "OTP verification failed" });
+  }
+});
+
+// 2️⃣ (OLD) CHILD VERIFIES OTP (KEEPING FOR BACKWARD COMPATIBILITY)
+app.post("/verify-child-otp", async (req, res) => {
+  try {
+    const { childPhone, otp } = req.body;
+
+    if (!childPhone || !otp) {
+      return res.status(400).json({ error: "Child phone and OTP required" });
+    }
+
+    if (!/^\d{6}$/.test(otp)) {
+      return res.status(400).json({ error: "OTP must be 6 digits" });
+    }
+
+    const cleanChildPhone = childPhone.replace(/[\s-]/g, '');
+
+    const record = await ChildOtp.findOne({ childPhone: cleanChildPhone });
+    if (!record) {
+      return res.status(400).json({ error: "OTP expired or not found" });
+    }
+
+    // Check expiration
+    if (record.expiresAt && record.expiresAt < new Date()) {
+      await ChildOtp.deleteOne({ childPhone: cleanChildPhone });
+      return res.status(400).json({ error: "OTP has expired" });
+    }
+
+    // Verify OTP
+    const hash = crypto
+      .createHash("sha256")
+      .update(otp)
+      .digest("hex");
+
+    if (hash !== record.otpHash) {
+      return res.status(401).json({ error: "Invalid OTP" });
+    }
+
+    await ChildOtp.deleteOne({ childPhone: cleanChildPhone });
+
+    console.log(`✅ CHILD OTP verified for ${cleanChildPhone} - Location access granted`);
+
+    res.json({ 
+      verified: true,
+      message: "OTP verified successfully. You can now share your location."
+    });
+  } catch (err) {
+    console.error("Verify child OTP error:", err);
+    res.status(500).json({ error: "OTP verification failed" });
+  }
+});
+
+// 3️⃣ CHILD SENDS LOCATION (STORE IN DB)
+app.post("/update-location", async (req, res) => {
+  try {
+    const { childPhone, latitude, longitude, accuracy } = req.body;
+
+    if (!childPhone || !latitude || !longitude) {
+      return res.status(400).json({ 
+        error: "Child phone, latitude, and longitude required" 
+      });
+    }
+
+    const cleanChildPhone = childPhone.replace(/[\s-]/g, '');
+
+    const link = await ParentChild.findOne({ childPhone: cleanChildPhone });
+    if (!link) {
+      return res.status(403).json({
+        error: "Child not registered"
+      });
+    }
+
+    await ChildLocation.create({
+      childPhone: cleanChildPhone,
+      latitude,
+      longitude,
+      accuracy
+    });
+
+    console.log(`📍 Location stored for ${cleanChildPhone}: ${latitude}, ${longitude}`);
+
+    res.json({ message: "Location stored successfully" });
+  } catch (err) {
+    console.error("Update location error:", err);
+    res.status(500).json({ error: "Failed to store location" });
+  }
+});
+
+// 4️⃣ PARENT FETCHES CHILD LOCATION (AUTH CHECK)
 app.post("/track-location", async (req, res) => {
   try {
     const { parentPhone, childPhone } = req.body;
@@ -499,7 +769,6 @@ app.post("/track-location", async (req, res) => {
     const cleanParentPhone = parentPhone.replace(/[\s-]/g, '');
     const cleanChildPhone = childPhone.replace(/[\s-]/g, '');
 
-    // Verify parent-child relationship
     const relationship = await ParentChild.findOne({
       parentPhone: cleanParentPhone,
       childPhone: cleanChildPhone
@@ -509,8 +778,8 @@ app.post("/track-location", async (req, res) => {
       return res.status(403).json({ error: "You are not authorized to track this child" });
     }
 
-    // Get child's location
-    const location = await ChildLocation.findOne({ childPhone: cleanChildPhone });
+    const location = await ChildLocation.findOne({ childPhone: cleanChildPhone })
+      .sort({ createdAt: -1 });
 
     if (!location) {
       return res.status(404).json({ error: "Location not available. Child needs to share location first." });
@@ -520,45 +789,13 @@ app.post("/track-location", async (req, res) => {
       childName: relationship.childName,
       latitude: location.latitude,
       longitude: location.longitude,
-      address: location.address,
-      lastUpdated: location.lastUpdated
+      accuracy: location.accuracy,
+      lastUpdated: location.createdAt
     });
 
   } catch (err) {
     console.error("Track location error:", err);
     res.status(500).json({ error: "Failed to fetch location" });
-  }
-});
-
-// UPDATE CHILD'S LOCATION (Called from child's device)
-app.post("/update-location", async (req, res) => {
-  try {
-    const { childPhone, latitude, longitude, address } = req.body;
-
-    if (!childPhone || !latitude || !longitude) {
-      return res.status(400).json({ error: "Child phone, latitude, and longitude are required" });
-    }
-
-    const cleanChildPhone = childPhone.replace(/[\s-]/g, '');
-
-    await ChildLocation.findOneAndUpdate(
-      { childPhone: cleanChildPhone },
-      {
-        latitude,
-        longitude,
-        address: address || "",
-        lastUpdated: new Date()
-      },
-      { upsert: true, new: true }
-    );
-
-    console.log(`📍 Location updated for ${cleanChildPhone}: ${latitude}, ${longitude}`);
-
-    res.json({ success: true, message: "Location updated" });
-
-  } catch (err) {
-    console.error("Update location error:", err);
-    res.status(500).json({ error: "Failed to update location" });
   }
 });
 
@@ -576,175 +813,3 @@ app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📱 SMS: ${ENABLE_SMS ? "ENABLED" : "DISABLED (console only)"}`);
 });
-
-
-
-// ===== CHILD OTP MODEL =====
-const ChildOtpSchema = new mongoose.Schema({
-  childPhone: {
-    type: String,
-    required: true
-  },
-  otpHash: {
-    type: String,
-    required: true
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now,
-    expires: 300 // 5 minutes
-  }
-});
-const ChildOtp = mongoose.model("ChildOtp", ChildOtpSchema);
-
-
-// ===== DB CONNECT =====
-mongoose
-  .connect(process.env.MONGO_URI)
-  .then(() => console.log("✅ MongoDB connected"))
-  .catch(err => console.error("MongoDB error:", err));
-
-// =====================================================
-// 1️⃣ PARENT REQUESTS CHILD TRACK (GENERATE CHILD OTP)
-// =====================================================
-app.post("/request-child-track", async (req, res) => {
-  try {
-    const { parentUsername, childPhone } = req.body;
-
-    // Validate parent-child mapping
-    const link = await ParentChild.findOne({
-      parentUsername,
-      childPhone
-    });
-
-    if (!link) {
-      return res.status(403).json({
-        error: "Unauthorized parent-child access"
-      });
-    }
-
-    // Generate OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const otpHash = crypto
-      .createHash("sha256")
-      .update(otp)
-      .digest("hex");
-
-    // Remove old OTPs for same child
-    await ChildOtp.deleteMany({ childPhone });
-
-    await ChildOtp.create({
-      childPhone,
-      otpHash
-    });
-
-    // 🔥 THIS IS THE LINE YOU ASKED FOR
-    console.log(`📱 CHILD TRACK OTP for ${childPhone}: ${otp}`);
-    console.log("⏳ Valid for 5 minutes");
-
-    res.json({ message: "Child OTP generated" });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to generate child OTP" });
-  }
-});
-
-// =======================================
-// 2️⃣ CHILD VERIFIES OTP (CONSENT STEP)
-// =======================================
-app.post("/verify-child-otp", async (req, res) => {
-  try {
-    const { childPhone, otp } = req.body;
-
-    const record = await ChildOtp.findOne({ childPhone });
-    if (!record) {
-      return res.status(400).json({ error: "OTP expired" });
-    }
-
-    const hash = crypto
-      .createHash("sha256")
-      .update(otp)
-      .digest("hex");
-
-    if (hash !== record.otpHash) {
-      return res.status(401).json({ error: "Invalid OTP" });
-    }
-
-    console.log(`✅ CHILD OTP verified for ${childPhone}`);
-
-    res.json({ verified: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "OTP verification failed" });
-  }
-});
-
-// =======================================
-// 3️⃣ CHILD SENDS LOCATION (STORE IN DB)
-// =======================================
-app.post("/update-location", async (req, res) => {
-  try {
-    const { childPhone, latitude, longitude, accuracy } = req.body;
-
-    // Validate child exists in mapping
-    const link = await ParentChild.findOne({ childPhone });
-    if (!link) {
-      return res.status(403).json({
-        error: "Child not registered"
-      });
-    }
-
-    await ChildLocation.create({
-      childPhone,
-      latitude,
-      longitude,
-      accuracy
-    });
-
-    console.log(`📍 Location stored for ${childPhone}`);
-
-    res.json({ message: "Location stored successfully" });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to store location" });
-  }
-});
-
-// ===================================================
-// 4️⃣ PARENT FETCHES CHILD LOCATION (AUTH CHECK)
-// ===================================================
-app.get(
-  "/parent/:username/child/:phone/location",
-  async (req, res) => {
-    try {
-      const { username, phone } = req.params;
-
-      const link = await ParentChild.findOne({
-        parentUsername: username,
-        childPhone: phone
-      });
-
-      if (!link) {
-        return res.status(403).json({
-          error: "Unauthorized access"
-        });
-      }
-
-      const location = await ChildLocation
-        .findOne({ childPhone: phone })
-        .sort({ createdAt: -1 });
-
-      if (!location) {
-        return res.status(404).json({
-          error: "No location data"
-        });
-      }
-
-      res.json(location);
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: "Failed to fetch location" });
-    }
-  }
-);
-

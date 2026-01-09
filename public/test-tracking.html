@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Test Tracking Request</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 800px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    .container {
+      background: white;
+      padding: 30px;
+      border-radius: 10px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+      margin-bottom: 20px;
+    }
+    h2 {
+      color: #333;
+      margin-bottom: 20px;
+    }
+    .form-group {
+      margin-bottom: 15px;
+    }
+    label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: bold;
+      color: #555;
+    }
+    input {
+      width: 100%;
+      padding: 10px;
+      border: 2px solid #ddd;
+      border-radius: 5px;
+      font-size: 16px;
+      box-sizing: border-box;
+    }
+    button {
+      width: 100%;
+      padding: 12px;
+      background: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      font-size: 16px;
+      cursor: pointer;
+      margin-top: 10px;
+    }
+    button:hover {
+      background: #45a049;
+    }
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    .result {
+      margin-top: 20px;
+      padding: 15px;
+      border-radius: 5px;
+      display: none;
+    }
+    .success {
+      background: #d4edda;
+      color: #155724;
+      border: 1px solid #c3e6cb;
+    }
+    .error {
+      background: #f8d7da;
+      color: #721c24;
+      border: 1px solid #f5c6cb;
+    }
+    .info {
+      background: #d1ecf1;
+      color: #0c5460;
+      border: 1px solid #bee5eb;
+      margin-top: 15px;
+    }
+    .otp-display {
+      background: #fff3cd;
+      border: 2px solid #ffc107;
+      padding: 20px;
+      border-radius: 10px;
+      text-align: center;
+      margin: 20px 0;
+      display: none;
+    }
+    .otp-code {
+      font-size: 36px;
+      font-weight: bold;
+      color: #d9534f;
+      letter-spacing: 5px;
+      margin: 10px 0;
+    }
+    pre {
+      background: #f8f9fa;
+      padding: 10px;
+      border-radius: 5px;
+      overflow-x: auto;
+      font-size: 12px;
+    }
+    .step {
+      background: #e7f3ff;
+      border-left: 4px solid #2196F3;
+      padding: 15px;
+      margin: 10px 0;
+    }
+    .step-title {
+      font-weight: bold;
+      color: #1976D2;
+      margin-bottom: 5px;
+    }
+    .link-box {
+      background: #f8f9fa;
+      padding: 15px;
+      border-radius: 5px;
+      margin: 15px 0;
+      border: 2px dashed #6c757d;
+    }
+    .link-box a {
+      color: #007bff;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>👨‍👧 Parent: Request Child Tracking</h2>
+    
+    <div class="info">
+      <strong>📝 STEP 1: Parent requests tracking</strong><br>
+      Enter parent and child phone numbers, then click "Request Tracking"
+    </div>
+
+    <form id="parentForm">
+      <div class="form-group">
+        <label>Parent Phone:</label>
+        <input type="tel" id="parentPhone" placeholder="+919876543210" required>
+      </div>
+
+      <div class="form-group">
+        <label>Child Phone:</label>
+        <input type="tel" id="childPhone" placeholder="+911234567890" required>
+      </div>
+
+      <button type="submit" id="parentBtn">🚀 Request Tracking (Parent)</button>
+    </form>
+
+    <div id="parentResult" class="result"></div>
+
+    <div id="otpDisplay" class="otp-display">
+      <div style="font-size: 18px; color: #856404;">🔑 OTP Generated (For Testing)</div>
+      <div class="otp-code" id="otpCode"></div>
+      <div style="font-size: 14px; color: #856404;">Copy this OTP and use it in the child consent form below</div>
+    </div>
+  </div>
+
+  <div class="container">
+    <h2>👶 Child: Verify & Share Location</h2>
+    
+    <div class="info">
+      <strong>📝 STEP 2: Child verifies consent</strong><br>
+      After parent requests tracking, child enters parent's phone and OTP received
+    </div>
+
+    <div class="link-box">
+      <strong>Child GPS Link:</strong><br>
+      <a href="http://localhost:5173/child-gps.html" target="_blank">http://localhost:5173/child-gps.html</a>
+    </div>
+
+    <form id="childForm">
+      <div class="form-group">
+        <label>Parent's Phone Number:</label>
+        <input type="tel" id="childParentPhone" placeholder="+919876543210" required>
+      </div>
+
+      <div class="form-group">
+        <label>Enter OTP (From above or SMS):</label>
+        <input type="text" id="childOtp" placeholder="6-digit code" maxlength="6" required>
+      </div>
+
+      <button type="submit" id="childBtn">✅ Verify & Share Location (Child)</button>
+    </form>
+
+    <div id="childResult" class="result"></div>
+  </div>
+
+  <div class="container">
+    <h2>📍 Track Child Location</h2>
+    
+    <div class="info">
+      <strong>📝 STEP 3: Parent views location</strong><br>
+      After child shares location, parent can view it here
+    </div>
+
+    <button id="trackBtn" style="background: #2196F3;">🗺️ View Child Location</button>
+
+    <div id="trackResult" class="result"></div>
+  </div>
+
+  <script>
+    const API_URL = 'http://localhost:5000';
+    let currentParentPhone = '';
+    let currentChildPhone = '';
+
+    // PARENT: Request Tracking
+    document.getElementById('parentForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      
+      const parentPhone = document.getElementById('parentPhone').value.trim();
+      const childPhone = document.getElementById('childPhone').value.trim();
+      const resultDiv = document.getElementById('parentResult');
+      const parentBtn = document.getElementById('parentBtn');
+      const otpDisplay = document.getElementById('otpDisplay');
+
+      currentParentPhone = parentPhone;
+      currentChildPhone = childPhone;
+
+      // Auto-fill child form
+      document.getElementById('childParentPhone').value = parentPhone;
+
+      resultDiv.style.display = 'none';
+      otpDisplay.style.display = 'none';
+      parentBtn.disabled = true;
+      parentBtn.textContent = '⏳ Requesting...';
+
+      try {
+        const response = await fetch(`${API_URL}/request-child-track`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ parentPhone, childPhone })
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+          resultDiv.className = 'result success';
+          resultDiv.innerHTML = `
+            <strong>✅ Tracking Request Sent!</strong><br><br>
+            ${data.message}<br>
+            ${data.otp ? `<br><strong>⚠️ OTP (SMS Disabled):</strong> ${data.otp}` : '<br><strong>SMS sent to child\'s phone!</strong>'}
+          `;
+          
+          // Show OTP if available
+          if (data.otp) {
+            document.getElementById('otpCode').textContent = data.otp;
+            document.getElementById('childOtp').value = data.otp;
+            otpDisplay.style.display = 'block';
+          }
+        } else {
+          resultDiv.className = 'result error';
+          resultDiv.innerHTML = `<strong>❌ Error:</strong> ${data.error}`;
+        }
+
+        resultDiv.style.display = 'block';
+
+      } catch (error) {
+        resultDiv.className = 'result error';
+        resultDiv.innerHTML = `<strong>❌ Request Failed:</strong> ${error.message}`;
+        resultDiv.style.display = 'block';
+      } finally {
+        parentBtn.disabled = false;
+        parentBtn.textContent = '🚀 Request Tracking (Parent)';
+      }
+    });
+
+    // CHILD: Verify Consent
+    document.getElementById('childForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      
+      const parentPhone = document.getElementById('childParentPhone').value.trim();
+      const otp = document.getElementById('childOtp').value.trim();
+      const resultDiv = document.getElementById('childResult');
+      const childBtn = document.getElementById('childBtn');
+
+      resultDiv.style.display = 'none';
+      childBtn.disabled = true;
+      childBtn.textContent = '⏳ Verifying...';
+
+      try {
+        const response = await fetch(`${API_URL}/verify-child-consent`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ parentPhone, otp })
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+          childBtn.textContent = '📍 Getting Location...';
+          
+          // Get location
+          navigator.geolocation.getCurrentPosition(
+            async (position) => {
+              childBtn.textContent = '📤 Sending Location...';
+              
+              const { latitude, longitude, accuracy } = position.coords;
+              
+              const locResponse = await fetch(`${API_URL}/update-location`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  childPhone: data.childPhone,
+                  latitude,
+                  longitude,
+                  accuracy
+                })
+              });
+
+              const locData = await locResponse.json();
+
+              if (locResponse.ok) {
+                resultDiv.className = 'result success';
+                resultDiv.innerHTML = `
+                  <strong>✅ Location Shared Successfully!</strong><br><br>
+                  Parent can now view your location<br>
+                  Latitude: ${latitude}<br>
+                  Longitude: ${longitude}
+                `;
+              } else {
+                throw new Error(locData.error);
+              }
+
+              resultDiv.style.display = 'block';
+              childBtn.textContent = '✅ Location Shared!';
+            },
+            (error) => {
+              resultDiv.className = 'result error';
+              resultDiv.innerHTML = `<strong>❌ Location Error:</strong> ${error.message}. Please allow location access.`;
+              resultDiv.style.display = 'block';
+              childBtn.disabled = false;
+              childBtn.textContent = '✅ Verify & Share Location (Child)';
+            }
+          );
+        } else {
+          resultDiv.className = 'result error';
+          resultDiv.innerHTML = `<strong>❌ Error:</strong> ${data.error}`;
+          resultDiv.style.display = 'block';
+          childBtn.disabled = false;
+          childBtn.textContent = '✅ Verify & Share Location (Child)';
+        }
+
+      } catch (error) {
+        resultDiv.className = 'result error';
+        resultDiv.innerHTML = `<strong>❌ Verification Failed:</strong> ${error.message}`;
+        resultDiv.style.display = 'block';
+        childBtn.disabled = false;
+        childBtn.textContent = '✅ Verify & Share Location (Child)';
+      }
+    });
+
+    // PARENT: Track Location
+    document.getElementById('trackBtn').addEventListener('click', async () => {
+      const resultDiv = document.getElementById('trackResult');
+      const trackBtn = document.getElementById('trackBtn');
+
+      if (!currentParentPhone || !currentChildPhone) {
+        alert('Please complete steps 1 and 2 first!');
+        return;
+      }
+
+      resultDiv.style.display = 'none';
+      trackBtn.disabled = true;
+      trackBtn.textContent = '⏳ Loading...';
+
+      try {
+        const response = await fetch(`${API_URL}/track-location`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            parentPhone: currentParentPhone,
+            childPhone: currentChildPhone
+          })
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+          resultDiv.className = 'result success';
+          resultDiv.innerHTML = `
+            <strong>📍 Child Location Found!</strong><br><br>
+            <strong>Child:</strong> ${data.childName}<br>
+            <strong>Latitude:</strong> ${data.latitude}<br>
+            <strong>Longitude:</strong> ${data.longitude}<br>
+            <strong>Accuracy:</strong> ${data.accuracy}m<br>
+            <strong>Last Updated:</strong> ${new Date(data.lastUpdated).toLocaleString()}<br><br>
+            <a href="https://www.google.com/maps?q=${data.latitude},${data.longitude}" target="_blank" style="color: #007bff;">🗺️ View on Google Maps</a>
+          `;
+        } else {
+          resultDiv.className = 'result error';
+          resultDiv.innerHTML = `<strong>❌ Error:</strong> ${data.error}`;
+        }
+
+        resultDiv.style.display = 'block';
+
+      } catch (error) {
+        resultDiv.className = 'result error';
+        resultDiv.innerHTML = `<strong>❌ Request Failed:</strong> ${error.message}`;
+        resultDiv.style.display = 'block';
+      } finally {
+        trackBtn.disabled = false;
+        trackBtn.textContent = '🗺️ View Child Location';
+      }
+    });
+  </script>
+</body>
+</html>
