@@ -182,7 +182,7 @@
     </form>
 
     <div class="info-text">
-      By verifying, you consent to share your current location with your parent.
+      By verifying, you consent to share your current location with your parent. After sharing, you'll be redirected back.
     </div>
   </div>
 
@@ -283,13 +283,18 @@
               throw new Error(data.error || 'Failed to send location');
             }
 
-            showMessage('✅ Location shared successfully! Your parent can now view your location. You can close this page.', 'success');
+            showMessage('✅ Location shared successfully! Redirecting to parent portal...', 'success');
             submitBtn.textContent = 'Location Shared ✓';
             submitBtn.style.background = '#48bb78';
             
             // Disable form
             parentPhoneInput.disabled = true;
             otpInput.disabled = true;
+
+            // Redirect to parent portal after 2 seconds
+            setTimeout(() => {
+              window.location.href = '/';  // Change this to your parent portal URL
+            }, 2000);
 
           } catch (error) {
             showMessage('Failed to send location: ' + error.message, 'error');
