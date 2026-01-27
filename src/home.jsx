@@ -3,7 +3,7 @@ import "./home.css";
 
 const API = "http://localhost:5001";
 
-export default function Home({ userPhone, token, onNavigate, onLogout }) {
+export default function Home({ userPhone, token, onLogout }) {
   const [view, setView] = useState("main"); // main, register, track
   const [childPhone, setChildPhone] = useState("");
   const [childName, setChildName] = useState("");
@@ -290,17 +290,33 @@ export default function Home({ userPhone, token, onNavigate, onLogout }) {
 
   return (
     <div className="home-container">
-      {/* Theme Toggle */}
-      <div className="theme-toggle" onClick={() => setTheme(theme === "light" ? "dark" : "light")}>
-        {theme === "light" ? "🌙 Dark" : "☀️ Light"}
-      </div>
-
-      {/* Logout Button */}
-      {token && onLogout && (
-        <div className="logout-button" onClick={onLogout}>
-          🚪 Logout
+      {/* Navigation Bar */}
+      <div className="top-nav-bar">
+        <div className="nav-brand">
+          <span className="nav-icon">🔒</span>
+          Child Tracker
         </div>
-      )}
+        <div className="nav-links">
+          <button className="nav-link active" onClick={() => handleViewChange("main")}>
+            🏠 Home
+          </button>
+        </div>
+        <div className="nav-actions">
+          <div className="user-info-nav">
+            <span className="user-icon-nav">👤</span>
+            <span className="user-phone-nav">{userPhone}</span>
+            <span className="user-role-badge">PARENT</span>
+          </div>
+          {onLogout && (
+            <button className="nav-logout" onClick={onLogout}>
+              🚪 Logout
+            </button>
+          )}
+          <button className="theme-toggle-nav" onClick={() => setTheme(theme === "light" ? "dark" : "light")}>
+            {theme === "light" ? "🌙" : "☀️"}
+          </button>
+        </div>
+      </div>
 
       <div className="animated-bg">
         <div className="circle circle-1"></div>
@@ -326,13 +342,6 @@ export default function Home({ userPhone, token, onNavigate, onLogout }) {
                 <p className="tracking-subtitle">
                   Manage your children and track their locations securely
                 </p>
-
-                {userPhone && (
-                  <div className="user-info">
-                    <span className="user-icon">👤</span>
-                    <span className="user-phone">{userPhone}</span>
-                  </div>
-                )}
 
                 {error && <div className="tracking-error">{error}</div>}
                 {message && <div className="tracking-success">{message}</div>}

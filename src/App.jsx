@@ -4,7 +4,7 @@ import Home from "./home";
 import ChildTracker from "./ChildTracker";
 import "./App.css";
 
-const API = "http://localhost:5001"; // Updated to port 5001
+const API = "http://localhost:5001";
 
 export default function App() {
   const [token, setToken] = useState(null);
@@ -108,61 +108,29 @@ export default function App() {
   }
 
   // Authenticated - show main app
+  // NO NAVIGATION BAR HERE - Let each component handle its own navigation
   return (
     <div className="app-container">
-      {/* Navigation */}
-      <nav className="app-navigation">
-        <div className="nav-content">
-          <div className="nav-left">
-            <div className="nav-logo">🔐</div>
-            <h1 className="nav-title">Child Tracker</h1>
-          </div>
-          <div className="nav-center">
-            <button
-              className={`nav-btn ${currentView === "home" ? "nav-btn-active" : ""}`}
-              onClick={() => setCurrentView("home")}
-            >
-              🏠 Home
-            </button>
-            <button
-              className={`nav-btn ${currentView === "tracker" ? "nav-btn-active" : ""}`}
-              onClick={() => setCurrentView("tracker")}
-            >
-              📍 Live Tracker
-            </button>
-          </div>
-          <div className="nav-right">
-            <div className="nav-user-info">
-              <span className="nav-user-icon">👤</span>
-              <div className="nav-user-details">
-                <div className="nav-username">{user?.username}</div>
-                <div className="nav-role">{user?.role}</div>
-              </div>
-            </div>
-            <button className="nav-logout-btn" onClick={handleLogout}>
-              🚪 Logout
-            </button>
-          </div>
-        </div>
-      </nav>
-
-      {/* Main Content */}
-      <main className="app-content">
-        {currentView === "home" && (
-          <Home
-            userPhone={user?.phone}
-            token={token}
-            onNavigate={setCurrentView}
-            onLogout={handleLogout}
-          />
-        )}
-        {currentView === "tracker" && (
-          <ChildTracker
-            token={token}
-            onLogout={handleLogout}
-          />
-        )}
-      </main>
+      {/* Main Content - No wrapper navigation */}
+      {currentView === "home" && (
+        <Home
+          userPhone={user?.phone}
+          userName={user?.username}
+          userRole={user?.role}
+          token={token}
+          onNavigate={() => setCurrentView("tracker")}
+          onLogout={handleLogout}
+        />
+      )}
+      {currentView === "tracker" && (
+        <ChildTracker
+          token={token}
+          userName={user?.username}
+          userRole={user?.role}
+          onLogout={handleLogout}
+          onNavigateHome={() => setCurrentView("home")}
+        />
+      )}
     </div>
   );
 }
