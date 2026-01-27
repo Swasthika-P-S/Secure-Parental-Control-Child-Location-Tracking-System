@@ -1,418 +1,168 @@
-import { useEffect, useState } from "react";
-import Home from "./components/home";
-import ChildTracker from "./components/ChildTracker";
+import { useState, useEffect } from "react";
+import Auth from "./Auth";
+import Home from "./home";
+import ChildTracker from "./ChildTracker";
 import "./App.css";
 
-const API = "http://localhost:5000";
-
+const API = "http://localhost:5001"; // Updated to port 5001
 
 export default function App() {
-  const [page, setPage] = useState("login");
-  const [form, setForm] = useState({
-    username: "",
-    password: "",
-    phone: ""
-  });
-  const [otp, setOtp] = useState("");
-  const [hint, setHint] = useState("");
-  const [phone, setPhone] = useState("");
-  const [theme, setTheme] = useState("light");
-  const [loading, setLoading] = useState(false);
-  const [errors, setErrors] = useState({});
-  const [showModal, setShowModal] = useState(false);
-  const [modalContent, setModalContent] = useState({ type: "", text: "" });
-  const [userPhone, setUserPhone] = useState("");
+  const [token, setToken] = useState(null);
+  const [user, setUser] = useState(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [currentView, setCurrentView] = useState("home"); // 'home' or 'tracker'
 
+  // Check for existing session on mount
   useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
-  }, [theme]);
+    const storedToken = localStorage.getItem("authToken");
+    const storedUser = localStorage.getItem("user");
 
-  const showPopup = (type, text, callback) => {
-    setModalContent({ type, text, callback });
-    setShowModal(true);
-  };
-
-  const closeModal = () => {
-    setShowModal(false);
-    if (modalContent.callback) {
-      modalContent.callback();
-    }
-  };
-
-  const handle = e => {
-    const { name, value } = e.target;
-    setForm({ ...form, [name]: value });
-    if (errors[name]) {
-      setErrors({ ...errors, [name]: "" });
-    }
-  };
-
-  const validateSignup = () => {
-    const newErrors = {};
-
-    if (!form.username || form.username.trim().length < 3) {
-      newErrors.username = "Username must be at least 3 characters";
-    } else if (!/^[a-zA-Z0-9_]+$/.test(form.username)) {
-      newErrors.username = "Username can only contain letters, numbers, and underscores";
-    }
-
-    if (!form.password || form.password.length < 8 || !/[A-Z]/.test(form.password) || !/[a-z]/.test(form.password) || !/[0-9]/.test(form.password) || !/[!@#$%^&*(),.?":{}|<>_\-+=\[\]\\\/;'`~]/.test(form.password)) {
-      newErrors.password = "Password must be 8+ characters with uppercase, lowercase, number, and special character";
-    }
-
-    if (!form.phone) {
-      newErrors.phone = "Phone number is required";
+    if (storedToken && storedUser) {
+      verifyToken(storedToken, JSON.parse(storedUser));
     } else {
-      const cleaned = form.phone.replace(/[\s-]/g, '');
-      if (!/^\+[1-9]\d{9,14}$/.test(cleaned)) {
-        newErrors.phone = "Phone must start with + and country code (e.g., +911234567890)";
-      }
+      setLoading(false);
     }
+  }, []);
 
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
-  };
-
-  const validateLogin = () => {
-    const newErrors = {};
-
-    if (!form.username || form.username.trim().length === 0) {
-      newErrors.username = "Username is required";
-    }
-
-    if (!form.password || form.password.length === 0) {
-      newErrors.password = "Password is required";
-    }
-
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
-  };
-
-  const signup = async () => {
-    if (!validateSignup()) return;
-
-    setLoading(true);
+  // Verify token validity
+  const verifyToken = async (token, userData) => {
     try {
-      const res = await fetch(`${API}/signup/send-otp`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form)
+      const response = await fetch(`${API}/profile`, {
+        headers: {
+          "Authorization": `Bearer ${token}`
+        }
       });
 
-      const data = await res.json();
-      
-      if (!res.ok) {
-        showPopup("error", data.error || "Signup failed");
-        return;
+      if (response.ok) {
+        setToken(token);
+        setUser(userData);
+        setIsAuthenticated(true);
+      } else {
+        // Token is invalid, clear storage
+        localStorage.removeItem("authToken");
+        localStorage.removeItem("user");
       }
-
-      setPhone(data.phone);
-      setHint(data.phoneHint);
-      showPopup("success", data.message);
-      setPage("signup-otp");
     } catch (err) {
-      console.error("Signup error:", err);
-      showPopup("error", "Network error. Please check if the server is running.");
+      console.error("Token verification failed:", err);
+      localStorage.removeItem("authToken");
+      localStorage.removeItem("user");
     } finally {
       setLoading(false);
     }
   };
 
-  const verifySignupOTP = async () => {
-    if (!otp || otp.length !== 6) {
-      showPopup("error", "Please enter a valid 6-digit OTP");
-      return;
-    }
+  // Handle login
+  const handleLogin = (newToken, userData) => {
+    setToken(newToken);
+    setUser(userData);
+    setIsAuthenticated(true);
 
-    setLoading(true);
-    try {
-      const res = await fetch(`${API}/signup/verify-otp`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone, otp })
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        showPopup("error", data.error || "Invalid OTP");
-        return;
-      }
-
-      showPopup("success", data.message, () => {
-        setForm({ username: "", password: "", phone: "" });
-        setOtp("");
-        setPage("login");
-      });
-    } catch (err) {
-      console.error("Verification error:", err);
-      showPopup("error", "Network error. Please try again.");
-    } finally {
-      setLoading(false);
-    }
+    // Persist to localStorage
+    localStorage.setItem("authToken", newToken);
+    localStorage.setItem("user", JSON.stringify(userData));
   };
 
-  const login = async () => {
-    if (!validateLogin()) return;
+  // Handle logout
+  const handleLogout = () => {
+    setToken(null);
+    setUser(null);
+    setIsAuthenticated(false);
+    setCurrentView("home");
 
-    setLoading(true);
-    try {
-      const res = await fetch(`${API}/login`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          username: form.username,
-          password: form.password
-        })
-      });
-
-      const data = await res.json();
-      
-      if (!res.ok) {
-        showPopup("error", data.error || "Login failed");
-        return;
-      }
-
-      setPhone(data.phone);
-      setHint(data.phoneHint);
-      setUserPhone(data.phone);
-      showPopup("success", data.message);
-      setPage("login-otp");
-    } catch (err) {
-      console.error("Login error:", err);
-      showPopup("error", "Network error. Please check if the server is running.");
-    } finally {
-      setLoading(false);
-    }
+    // Clear localStorage
+    localStorage.removeItem("authToken");
+    localStorage.removeItem("user");
   };
 
-  const verifyLoginOTP = async () => {
-    if (!otp || otp.length !== 6) {
-      showPopup("error", "Please enter a valid 6-digit OTP");
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const res = await fetch(`${API}/verify-otp`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone, otp })
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        showPopup("error", data.error || "Invalid OTP");
-        return;
-      }
-
-      showPopup("success", "Login successful!", () => {
-        setPage("home");
-      });
-    } catch (err) {
-      console.error("Verification error:", err);
-      showPopup("error", "Network error. Please try again.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleKeyPress = (e, action) => {
-    if (e.key === "Enter" && !loading) {
-      action();
-    }
-  };
-
-  return (
-    <>
-      {page !== "home" && page !== "child-tracker" && (
-        <div className="theme-toggle" onClick={() =>
-          setTheme(theme === "light" ? "dark" : "light")
-        }>
-          {theme === "light" ? "🌙 Dark" : "☀️ Light"}
+  // Loading screen
+  if (loading) {
+    return (
+      <div style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)"
+      }}>
+        <div style={{
+          background: "white",
+          padding: "40px",
+          borderRadius: "20px",
+          textAlign: "center",
+          boxShadow: "0 20px 60px rgba(0,0,0,0.3)"
+        }}>
+          <div style={{ fontSize: "48px", marginBottom: "16px" }}>⏳</div>
+          <h2 style={{ margin: "0 0 8px 0", color: "#1a202c" }}>Loading...</h2>
+          <p style={{ margin: 0, color: "#718096", fontSize: "14px" }}>
+            Please wait
+          </p>
         </div>
-      )}
+      </div>
+    );
+  }
 
-      {showModal && (
-        <div className="modal-overlay" onClick={closeModal}>
-          <div className="modal-box" onClick={(e) => e.stopPropagation()}>
-            <div className={`modal-icon ${modalContent.type}`}>
-              {modalContent.type === "success" ? "✓" : "✕"}
+  // Not authenticated - show auth screen
+  if (!isAuthenticated) {
+    return <Auth onLogin={handleLogin} />;
+  }
+
+  // Authenticated - show main app
+  return (
+    <div className="app-container">
+      {/* Navigation */}
+      <nav className="app-navigation">
+        <div className="nav-content">
+          <div className="nav-left">
+            <div className="nav-logo">🔐</div>
+            <h1 className="nav-title">Child Tracker</h1>
+          </div>
+          <div className="nav-center">
+            <button
+              className={`nav-btn ${currentView === "home" ? "nav-btn-active" : ""}`}
+              onClick={() => setCurrentView("home")}
+            >
+              🏠 Home
+            </button>
+            <button
+              className={`nav-btn ${currentView === "tracker" ? "nav-btn-active" : ""}`}
+              onClick={() => setCurrentView("tracker")}
+            >
+              📍 Live Tracker
+            </button>
+          </div>
+          <div className="nav-right">
+            <div className="nav-user-info">
+              <span className="nav-user-icon">👤</span>
+              <div className="nav-user-details">
+                <div className="nav-username">{user?.username}</div>
+                <div className="nav-role">{user?.role}</div>
+              </div>
             </div>
-            <h3 className="modal-title">
-              {modalContent.type === "success" ? "Success" : "Error"}
-            </h3>
-            <p className="modal-message">{modalContent.text}</p>
-            <button className="modal-button" onClick={closeModal}>
-              OK
+            <button className="nav-logout-btn" onClick={handleLogout}>
+              🚪 Logout
             </button>
           </div>
         </div>
-      )}
+      </nav>
 
-      {page === "child-tracker" ? (
-        <ChildTracker />
-      ) : page === "home" ? (
-        <Home userPhone={userPhone} onNavigate={setPage} />
-      ) : (
-        <div className="auth-wrapper">
-          <div className="box">
-
-            {page === "signup" && (
-              <>
-                <h2>Create Account</h2>
-                <div>
-                  <input 
-                    name="username" 
-                    placeholder="Username" 
-                    value={form.username}
-                    onChange={handle}
-                    onKeyPress={(e) => handleKeyPress(e, signup)}
-                    disabled={loading}
-                  />
-                  {errors.username && <div className="error">{errors.username}</div>}
-                </div>
-                <div>
-                  <input 
-                    type="password" 
-                    name="password" 
-                    placeholder="Password (min 8 chars, A-z, 0-9, !@#...)" 
-                    value={form.password}
-                    onChange={handle}
-                    onKeyPress={(e) => handleKeyPress(e, signup)}
-                    disabled={loading}
-                  />
-                  {errors.password && <div className="error">{errors.password}</div>}
-                </div>
-                <div>
-                  <input 
-                    name="phone" 
-                    placeholder="+91**********" 
-                    value={form.phone}
-                    onChange={handle}
-                    onKeyPress={(e) => handleKeyPress(e, signup)}
-                    disabled={loading}
-                  />
-                  {errors.phone && <div className="error">{errors.phone}</div>}
-                </div>
-                <button onClick={signup} disabled={loading}>
-                  {loading ? "Sending OTP..." : "Continue"}
-                </button>
-                <div className="auth-footer">
-                  <span>Already have an account?</span>
-                  <span className="signup-link" onClick={() => {
-                    setPage("login");
-                    setErrors({});
-                    setForm({ username: "", password: "", phone: "" });
-                  }}>Login</span>
-                </div>
-              </>
-            )}
-
-            {page === "signup-otp" && (
-              <>
-                <h2>Verify Phone Number</h2>
-                <div className="otp-hint">
-                  Enter the OTP sent to ***{hint}
-                  <br />
-                </div>
-                <input 
-                  placeholder="Enter 6-digit OTP" 
-                  value={otp}
-                  onChange={e => {
-                    const val = e.target.value.replace(/\D/g, '').slice(0, 6);
-                    setOtp(val);
-                  }}
-                  onKeyPress={(e) => handleKeyPress(e, verifySignupOTP)}
-                  maxLength={6}
-                  disabled={loading}
-                />
-                <button onClick={verifySignupOTP} disabled={loading || otp.length !== 6}>
-                  {loading ? "Verifying..." : "Verify & Create Account"}
-                </button>
-                <div className="auth-footer">
-                  <span className="signup-link" onClick={() => {
-                    setPage("signup");
-                    setOtp("");
-                  }}>Back to Signup</span>
-                </div>
-              </>
-            )}
-
-            {page === "login" && (
-              <>
-                <h2>Welcome Back</h2>
-                <div>
-                  <input 
-                    name="username" 
-                    placeholder="Username" 
-                    value={form.username}
-                    onChange={handle}
-                    onKeyPress={(e) => handleKeyPress(e, login)}
-                    disabled={loading}
-                  />
-                  {errors.username && <div className="error">{errors.username}</div>}
-                </div>
-                <div>
-                  <input 
-                    type="password" 
-                    name="password" 
-                    placeholder="Password" 
-                    value={form.password}
-                    onChange={handle}
-                    onKeyPress={(e) => handleKeyPress(e, login)}
-                    disabled={loading}
-                  />
-                  {errors.password && <div className="error">{errors.password}</div>}
-                </div>
-                <button onClick={login} disabled={loading}>
-                  {loading ? "Logging in..." : "Login"}
-                </button>
-                <div className="auth-footer">
-                  <span>New user?</span>
-                  <span className="signup-link" onClick={() => {
-                    setPage("signup");
-                    setErrors({});
-                    setForm({ username: "", password: "", phone: "" });
-                  }}>Create account</span>
-                </div>
-              </>
-            )}
-
-            {page === "login-otp" && (
-              <>
-                <h2>OTP Verification</h2>
-                <div className="otp-hint">
-                  Enter the OTP sent to ***{hint}
-                  <br />
-                </div>
-                <input 
-                  placeholder="Enter 6-digit OTP" 
-                  value={otp}
-                  onChange={e => {
-                    const val = e.target.value.replace(/\D/g, '').slice(0, 6);
-                    setOtp(val);
-                  }}
-                  onKeyPress={(e) => handleKeyPress(e, verifyLoginOTP)}
-                  maxLength={6}
-                  disabled={loading}
-                />
-                <button onClick={verifyLoginOTP} disabled={loading || otp.length !== 6}>
-                  {loading ? "Verifying..." : "Verify"}
-                </button>
-                <div className="auth-footer">
-                  <span className="signup-link" onClick={() => {
-                    setPage("login");
-                    setOtp("");
-                  }}>Back to Login</span>
-                </div>
-              </>
-            )}
-
-          </div>
-        </div>
-      )}
-    </>
+      {/* Main Content */}
+      <main className="app-content">
+        {currentView === "home" && (
+          <Home
+            userPhone={user?.phone}
+            token={token}
+            onNavigate={setCurrentView}
+            onLogout={handleLogout}
+          />
+        )}
+        {currentView === "tracker" && (
+          <ChildTracker
+            token={token}
+            onLogout={handleLogout}
+          />
+        )}
+      </main>
+    </div>
   );
 }
