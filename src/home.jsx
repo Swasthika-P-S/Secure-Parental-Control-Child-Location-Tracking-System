@@ -110,7 +110,7 @@ export default function Home({ userPhone, token, onLogout }) {
     }
   };
 
-  // Register child - send OTP
+  // Register child - send OTP to CHILD's phone
   const handleRegisterChild = async () => {
     const phoneRegex = /^\+?[1-9]\d{9,14}$/;
     
@@ -148,7 +148,8 @@ export default function Home({ userPhone, token, onLogout }) {
         })
       });
 
-      setMessage(data.message || "OTP sent to your phone for verification");
+      // Show message that OTP was sent to CHILD's phone
+      setMessage(data.message || "OTP sent to child's phone for verification");
       setStep(2);
     } catch (err) {
       setError(err.message);
@@ -170,7 +171,10 @@ export default function Home({ userPhone, token, onLogout }) {
     try {
       const data = await apiCall("/verify-parent", {
         method: "POST",
-        body: JSON.stringify({ otp })
+        body: JSON.stringify({ 
+          otp,
+          childPhone: childPhone.trim() // Include child phone for verification
+        })
       });
 
       setMessage("✅ " + data.message);
@@ -395,7 +399,7 @@ export default function Home({ userPhone, token, onLogout }) {
                       <label>Child's Phone Number <span className="required">*</span></label>
                       <input
                         type="text"
-                        placeholder="+1234567890"
+                        placeholder="+91**********"
                         value={childPhone}
                         onChange={(e) => {
                           setChildPhone(e.target.value);
@@ -415,7 +419,7 @@ export default function Home({ userPhone, token, onLogout }) {
                         className="tracking-btn" 
                         disabled={loading || !childName.trim() || !childPhone.trim()}
                       >
-                        {loading ? "⏳ Sending..." : "📤 Send OTP"}
+                        {loading ? "⏳ Sending..." : "📤 Send OTP to Child"}
                       </button>
                       <button 
                         onClick={() => handleViewChange("main")} 
@@ -427,7 +431,7 @@ export default function Home({ userPhone, token, onLogout }) {
                     </div>
                     <p className="tracking-note">
                       <span className="note-icon">ℹ️</span>
-                      OTP will be sent to your phone ({userPhone}) for verification
+                      OTP will be sent to child's phone {childPhone ? `(${childPhone})` : ""} for verification
                     </p>
                   </div>
                 )}
@@ -438,7 +442,7 @@ export default function Home({ userPhone, token, onLogout }) {
                       <span className="info-icon">📱</span>
                       <div>
                         <p className="verification-text">Verification code sent!</p>
-                        <p className="verification-subtext">Check your phone: {userPhone}</p>
+                        <p className="verification-subtext">Check child's phone: {childPhone}</p>
                       </div>
                     </div>
                     <div className="input-group">
@@ -479,7 +483,11 @@ export default function Home({ userPhone, token, onLogout }) {
                     </div>
                     <p className="tracking-note">
                       <span className="note-icon">⏱️</span>
-                      OTP expires in 5 minutes
+                      OTP sent to child's phone for verification. Expires in 5 minutes
+                    </p>
+                    <p className="tracking-note" style={{ marginTop: '10px' }}>
+                      <span className="note-icon">💡</span>
+                      Ask your child to check their messages and share the 6-digit code
                     </p>
                   </div>
                 )}

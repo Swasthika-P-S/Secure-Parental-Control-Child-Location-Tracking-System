@@ -1,4 +1,5 @@
 require("dotenv").config({ path: __dirname + '/.env' });
+const fs = require("fs");
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
@@ -8,112 +9,114 @@ const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const jwt = require("jsonwebtoken");
 
+/* ===================== MODELS ===================== */
 const User = require("./models/User");
 const Otp = require("./models/Otp");
 const ParentChild = require("./models/ParentChild");
 const ChildLocation = require("./models/ChildLocation");
 
+/* ===================== SECURITY MODULES ===================== */
+const { AES_KEY, timingSafeEqualHex } = require("./security");
+const { encryptGCM, decryptGCM } = require("./crypto-utils-gcm");
+const { RSASignature, ECDSASignature, HMACAuth, DocumentSigner } = require("./digital-signatures");
+const { KeyExchange, RSAKeyExchange } = require("./key-exchange");
+
+/* ===================== ENCRYPTION WRAPPER FUNCTIONS ===================== */
+/**
+ * Encrypt data using AES-GCM
+ * @param {string} data - Data to encrypt
+ * @returns {string} - Encrypted data with IV and auth tag
+ */
+const encrypt = (data) => {
+  try {
+    return encryptGCM(String(data));
+  } catch (err) {
+    console.error("Encryption error:", err);
+    throw new Error("Encryption failed");
+  }
+};
+
+/**
+ * Decrypt data using AES-GCM
+ * @param {string} encryptedData - Encrypted data with IV and auth tag
+ * @returns {string} - Decrypted plaintext
+ */
+const decrypt = (encryptedData) => {
+  try {
+    return decryptGCM(String(encryptedData));
+  } catch (err) {
+    console.error("Decryption error:", err);
+    throw new Error("Decryption failed");
+  }
+};
+
+/* ===================== SIGNER INITIALIZATION (singleton) ===================== */
+let serverSigner = null;
+const RSA_PRIVATE_KEY_ENV = process.env.RSA_PRIVATE_KEY || null;
+const RSA_PUBLIC_KEY_ENV = process.env.RSA_PUBLIC_KEY || null;
+const RSA_PRIVATE_KEY_PATH = process.env.RSA_PRIVATE_KEY_PATH || null;
+const RSA_PUBLIC_KEY_PATH = process.env.RSA_PUBLIC_KEY_PATH || null;
+
+if (RSA_PRIVATE_KEY_ENV && RSA_PUBLIC_KEY_ENV) {
+  serverSigner = new RSASignature();
+  serverSigner.keyPair = { privateKey: RSA_PRIVATE_KEY_ENV, publicKey: RSA_PUBLIC_KEY_ENV };
+  console.log("[signer] RSA keys loaded from environment variables");
+} else if (RSA_PRIVATE_KEY_PATH && RSA_PUBLIC_KEY_PATH && fs.existsSync(RSA_PRIVATE_KEY_PATH) && fs.existsSync(RSA_PUBLIC_KEY_PATH)) {
+  serverSigner = new RSASignature();
+  serverSigner.keyPair = { privateKey: fs.readFileSync(RSA_PRIVATE_KEY_PATH, 'utf8'), publicKey: fs.readFileSync(RSA_PUBLIC_KEY_PATH, 'utf8') };
+  console.log("[signer] RSA keys loaded from files");
+} else if (process.env.NODE_ENV !== 'production') {
+  serverSigner = new RSASignature();
+  serverSigner.generateKeyPair();
+  console.log("[signer] Generated ephemeral RSA key pair for development");
+} else {
+  console.warn("[signer] WARNING: No RSA keys configured. Signing will be disabled in production.");
+  serverSigner = null;
+}
+
+/* ===================== APP START ===================== */
 const app = express();
 
 /* ===================== CONFIGURATION ===================== */
 const CONFIG = {
   JWT_SECRET: process.env.JWT_SECRET || crypto.randomBytes(64).toString("hex"),
-  JWT_EXPIRES_IN: "7d",
-  OTP_EXPIRY: 5 * 60 * 1000, // 5 minutes
-  OTP_LENGTH: 6,
-  SALT_ROUNDS: 8, // 8 bytes = 16 hex characters
-  PBKDF2_ITERATIONS: 100000,
-  AES_KEY: process.env.AES_KEY 
-    ? Buffer.from(process.env.AES_KEY, "hex") 
-    : crypto.randomBytes(32),
-  PORT: process.env.PORT || 5001,
+  JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || "7d",
+  OTP_EXPIRY: parseInt(process.env.OTP_EXPIRY_MS || String(5 * 60 * 1000), 10),
+  OTP_LENGTH: parseInt(process.env.OTP_LENGTH || "6", 10),
+  SALT_BYTES: parseInt(process.env.SALT_BYTES || "16", 10),
+  PBKDF2_ITERATIONS: parseInt(process.env.PBKDF2_ITERATIONS || "100000", 10),
+  PORT: parseInt(process.env.PORT || "5001", 10),
   ENABLE_SMS: process.env.ENABLE_SMS === "true"
 };
+CONFIG.AES_KEY = AES_KEY; // backward compatibility
 
-// Warning for production
-if (!process.env.JWT_SECRET) {
-  console.warn("⚠️  WARNING: Using random JWT_SECRET. Sessions will reset on restart!");
-}
-if (!process.env.AES_KEY) {
-  console.warn("⚠️  WARNING: Using random AES_KEY. Encrypted data will be unreadable on restart!");
-}
+if (!process.env.JWT_SECRET) console.warn("⚠️  WARNING: Using random JWT_SECRET. Sessions will reset on restart!");
+if (!process.env.AES_KEY) console.warn("⚠️  WARNING: AES_KEY not set. Using derived fallback key (dev only).");
 
 /* ===================== MIDDLEWARE ===================== */
 app.use(helmet());
-
-// CORS - More explicit configuration
 app.use(cors({
   origin: function(origin, callback) {
-    const allowedOrigins = process.env.ALLOWED_ORIGINS 
-      ? process.env.ALLOWED_ORIGINS.split(',') 
-      : ['http://localhost:3000', 'http://localhost:5173', 'http://localhost:5500'];
-    
-    // Allow requests with no origin (like mobile apps or Postman)
+    const allowedOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : ['http://localhost:3000','http://localhost:5173','http://localhost:5500'];
     if (!origin) return callback(null, true);
-    
-    if (allowedOrigins.indexOf(origin) !== -1 || allowedOrigins.includes('*')) {
-      callback(null, true);
-    } else {
-      callback(null, true); // Allow all in development, or set to false for strict mode
-    }
+    if (allowedOrigins.indexOf(origin) !== -1 || allowedOrigins.includes('*')) return callback(null, true);
+    callback(null, true);
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization']
 }));
+app.use(express.json({ limit:'10kb', verify:(req,res,buf)=>{ try{ JSON.parse(buf);}catch(e){ const err = new Error('Invalid JSON format'); err.type='entity.parse.failed'; throw err; }}}));
+app.use(express.urlencoded({ extended:true, limit:'10kb' }));
 
-// Parse JSON with error handling
-app.use(express.json({ 
-  limit: '10kb',
-  // Handle JSON parsing errors
-  verify: (req, res, buf, encoding) => {
-    try {
-      JSON.parse(buf);
-    } catch(e) {
-      res.status(400).json({
-        success: false,
-        error: 'Invalid JSON format'
-      });
-      throw new Error('Invalid JSON');
-    }
-  }
-}));
-
-// Parse URL-encoded data
-app.use(express.urlencoded({ extended: true, limit: '10kb' }));
-
-// Log all requests in development
 if (process.env.NODE_ENV !== 'production') {
-  app.use((req, res, next) => {
-    console.log(`${req.method} ${req.path}`, req.body);
-    next();
-  });
+  app.use((req,res,next)=>{ console.log(`${req.method} ${req.path}`, req.body || {}); next(); });
 }
 
-// General rate limiting
-const generalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-  message: { success: false, error: "Too many requests, please try again later" },
-  standardHeaders: true,
-  legacyHeaders: false
-});
+const generalLimiter = rateLimit({ windowMs:15*60*1000, max:100, message:{success:false,error:"Too many requests"}, standardHeaders:true, legacyHeaders:false });
 app.use(generalLimiter);
-
-// Strict rate limit for OTP endpoints
-const otpLimiter = rateLimit({
-  windowMs: 5 * 60 * 1000,
-  max: 5,
-  message: { success: false, error: "Too many OTP requests, please try again later" },
-  skipSuccessfulRequests: false
-});
-
-// Auth rate limiter
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  message: { success: false, error: "Too many authentication attempts, please try again later" }
-});
+const otpLimiter = rateLimit({ windowMs:5*60*1000, max:5, message:{success:false,error:"Too many OTP requests"} });
+const authLimiter = rateLimit({ windowMs:15*60*1000, max:10, message:{success:false,error:"Too many auth attempts"} });
 
 /* ===================== DATABASE ===================== */
 mongoose
@@ -159,23 +162,17 @@ if (CONFIG.ENABLE_SMS) {
 }
 
 const sendSMS = async (to, body) => {
-  // If SMS is disabled
   if (!CONFIG.ENABLE_SMS) {
     console.log(`\n${'='.repeat(60)}`);
     console.log(`📱 [SMS DISABLED] OTP for ${to}:`);
     console.log(`Message: ${body}`);
     console.log('='.repeat(60) + '\n');
-    
-    // In development mode, allow the flow to continue
     if (process.env.NODE_ENV === 'development') {
       return { success: true, message: 'Development mode - check console for OTP' };
     }
-    
-    // In production, throw error if SMS is disabled
     throw new Error('SMS service is currently disabled. Please contact support.');
   }
   
-  // If Twilio client not initialized
   if (!twilioClient) {
     console.error('❌ Twilio client not initialized');
     throw new Error('SMS service is not available. Please try again later.');
@@ -197,20 +194,12 @@ const sendSMS = async (to, body) => {
       moreInfo: err.moreInfo
     });
     
-    // Provide user-friendly error messages based on Twilio error codes
     let userMessage = 'Failed to send SMS. Please try again.';
-    
-    if (err.code === 21211) {
-      userMessage = 'Invalid phone number format. Please check and try again.';
-    } else if (err.code === 21408) {
-      userMessage = 'This phone number is not verified. Please verify it in your Twilio account.';
-    } else if (err.code === 21610) {
-      userMessage = 'Unable to send SMS to this number. It may have opted out.';
-    } else if (err.code === 20003) {
-      userMessage = 'SMS service authentication failed. Please contact support.';
-    } else if (err.code === 21606) {
-      userMessage = 'SMS service configuration error. Please contact support.';
-    }
+    if (err.code === 21211) userMessage = 'Invalid phone number format. Please check and try again.';
+    else if (err.code === 21408) userMessage = 'This phone number is not verified. Please verify it in your Twilio account.';
+    else if (err.code === 21610) userMessage = 'Unable to send SMS to this number. It may have opted out.';
+    else if (err.code === 20003) userMessage = 'SMS service authentication failed. Please contact support.';
+    else if (err.code === 21606) userMessage = 'SMS service configuration error. Please contact support.';
     
     throw new Error(userMessage);
   }
@@ -238,42 +227,10 @@ const checkAccess = (role, resource, action) => {
   return ACM[role]?.[resource]?.includes(action) || false;
 };
 
-// AES Encryption/Decryption
-const IV_LENGTH = 16;
-
-const encrypt = (text) => {
-  try {
-    const iv = crypto.randomBytes(IV_LENGTH);
-    const cipher = crypto.createCipheriv("aes-256-cbc", CONFIG.AES_KEY, iv);
-    let encrypted = cipher.update(text, "utf8", "hex");
-    encrypted += cipher.final("hex");
-    return `${iv.toString("hex")}:${encrypted}`;
-  } catch (err) {
-    console.error("Encryption error:", err);
-    throw new Error("Encryption failed");
-  }
-};
-
-const decrypt = (data) => {
-  try {
-    const [ivHex, encrypted] = data.split(":");
-    if (!ivHex || !encrypted) throw new Error("Invalid encrypted data format");
-    
-    const iv = Buffer.from(ivHex, "hex");
-    const decipher = crypto.createDecipheriv("aes-256-cbc", CONFIG.AES_KEY, iv);
-    let decrypted = decipher.update(encrypted, "hex", "utf8");
-    decrypted += decipher.final("utf8");
-    return decrypted;
-  } catch (err) {
-    console.error("Decryption error:", err);
-    throw new Error("Decryption failed");
-  }
-};
-
 // Password hashing
 const hashPassword = (password, salt) => {
   return crypto
-    .pbkdf2Sync(password, salt, CONFIG.PBKDF2_ITERATIONS, 64, "sha512")
+    .pbkdf2Sync(String(password), String(salt), CONFIG.PBKDF2_ITERATIONS, 64, "sha512")
     .toString("hex");
 };
 
@@ -286,17 +243,16 @@ const generateOTP = () => {
 };
 
 const hashOTP = (otp) => {
-  return crypto.createHash("sha256").update(otp).digest("hex");
+  return crypto.createHash("sha256").update(String(otp)).digest("hex");
 };
 
-// JWT token generation
+/* ===================== JWT helpers & middleware ===================== */
 const generateToken = (payload) => {
   return jwt.sign(payload, CONFIG.JWT_SECRET, {
     expiresIn: CONFIG.JWT_EXPIRES_IN
   });
 };
 
-// JWT verification middleware
 const verifyToken = (req, res, next) => {
   const token = req.headers.authorization?.replace("Bearer ", "");
   
@@ -319,7 +275,6 @@ const verifyToken = (req, res, next) => {
   }
 };
 
-// Role check middleware
 const requireRole = (...allowedRoles) => {
   return (req, res, next) => {
     if (!req.user || !allowedRoles.includes(req.user.role)) {
@@ -335,8 +290,8 @@ const requireRole = (...allowedRoles) => {
 /* ===================== VALIDATION ===================== */
 
 const validatePhone = (phone) => {
-  const phoneRegex = /^\+?[1-9]\d{1,14}$/; // E.164 format
-  return phoneRegex.test(phone);
+  const phoneRegex = /^\+?[1-9]\d{1,14}$/; // E.164
+  return phoneRegex.test(String(phone));
 };
 
 const validatePassword = (password) => {
@@ -372,7 +327,7 @@ const sanitizeInput = (input) => {
   return input;
 };
 
-/* ===================== ERROR HANDLING ===================== */
+/* ===================== ERROR HANDLING / UTILITIES ===================== */
 
 class AppError extends Error {
   constructor(message, statusCode) {
@@ -389,7 +344,7 @@ const asyncHandler = (fn) => {
   };
 };
 
-/* ===================== OTP MANAGEMENT (IMPROVED) ===================== */
+/* ===================== OTP MANAGEMENT ===================== */
 
 const createOTP = async (phone, type, additionalData = {}) => {
   const otp = generateOTP();
@@ -409,23 +364,14 @@ const createOTP = async (phone, type, additionalData = {}) => {
     expiresAt: new Date(Date.now() + CONFIG.OTP_EXPIRY)
   });
   
-  console.log(`[CREATE OTP] ✓ OTP created:`, {
-    phone: otpRecord.phone,
-    type: otpRecord.type,
-    otp: otp, // Log actual OTP for debugging
-    expiresAt: otpRecord.expiresAt
-  });
+  console.log(`[CREATE OTP] ✓ OTP created (dev log):`, { phone: otpRecord.phone, type: otpRecord.type, otp: otp, expiresAt: otpRecord.expiresAt });
   
-  // Try to send SMS
   try {
-    await sendSMS(phone, `Your verification code is: ${otp}. Valid for 5 minutes.`);
+    await sendSMS(phone, `Your verification code is: ${otp}. Valid for ${Math.floor(CONFIG.OTP_EXPIRY / 1000)} seconds.`);
     console.log(`[CREATE OTP] ✅ SMS sent successfully`);
   } catch (err) {
-    // If SMS fails, delete the OTP record since user can't verify
     console.error(`[CREATE OTP] ❌ Failed to send SMS:`, err.message);
     await Otp.deleteOne({ _id: otpRecord._id });
-    
-    // Throw error with user-friendly message
     throw new AppError(`Unable to send OTP: ${err.message}`, 503);
   }
   
@@ -436,19 +382,12 @@ const verifyOTP = async (phone, otp, type = null) => {
   const query = { phone };
   if (type) query.type = type;
   
-  console.log(`[VERIFY OTP] Looking for OTP with query:`, query);
+  console.log(`[VERIFY OTP] Query:`, query);
   console.log(`[VERIFY OTP] Input OTP: ${otp}`);
   
-  // Get the most recent OTP for this phone/type
   const record = await Otp.findOne(query).sort({ createdAt: -1 });
-  
   if (!record) {
     console.log(`[VERIFY OTP] ❌ No OTP found for phone: ${phone}, type: ${type}`);
-    // Check if there are any OTPs for this phone at all
-    const anyOtp = await Otp.findOne({ phone });
-    if (anyOtp) {
-      console.log(`[VERIFY OTP] Found OTP with different type:`, anyOtp.type);
-    }
     throw new AppError("OTP expired or not found", 400);
   }
   
@@ -456,26 +395,21 @@ const verifyOTP = async (phone, otp, type = null) => {
     phone: record.phone,
     type: record.type,
     expiresAt: record.expiresAt,
-    currentTime: new Date(),
+    now: new Date(),
     hasExpired: new Date() > record.expiresAt
   });
   
-  // Check if OTP has expired
   if (new Date() > record.expiresAt) {
     console.log(`[VERIFY OTP] ❌ OTP has expired`);
     await Otp.deleteOne({ _id: record._id });
     throw new AppError("OTP has expired", 400);
   }
   
-  // Verify OTP hash
   const inputHash = hashOTP(otp);
-  console.log(`[VERIFY OTP] Hash comparison:`, {
-    inputHash: inputHash.substring(0, 20) + '...',
-    storedHash: record.otpHash.substring(0, 20) + '...',
-    match: inputHash === record.otpHash
-  });
+  const matches = timingSafeEqualHex(inputHash, record.otpHash);
+  console.log(`[VERIFY OTP] Hash match: ${matches}`);
   
-  if (inputHash !== record.otpHash) {
+  if (!matches) {
     console.log(`[VERIFY OTP] ❌ Invalid OTP - hash mismatch`);
     throw new AppError("Invalid OTP", 401);
   }
@@ -520,49 +454,50 @@ app.get("/", (req, res) => {
   });
 });
 
+// ADMIN SECURITY ROUTES
+app.post("/admin/sign", verifyToken, requireRole("Admin"), (req, res) => {
+  if (!serverSigner) return res.status(503).json({ success: false, error: "Signer not ready" });
+  const signature = serverSigner.sign(JSON.stringify(req.body));
+  res.json({ success: true, signature, publicKey: serverSigner.getPublicKey() });
+});
+
+app.post("/admin/verify", verifyToken, requireRole("Admin"), (req, res) => {
+  const { document, signature, publicKey } = req.body;
+  const valid = RSASignature.verify(JSON.stringify(document), signature, publicKey);
+  res.json({ success: true, valid });
+});
+
 /* ===================== AUTH ROUTES ===================== */
 
 // Signup - Send OTP
 app.post("/signup/send-otp", authLimiter, otpLimiter, asyncHandler(async (req, res) => {
   let { username, password, phone } = req.body;
   
-  // Sanitize inputs
   username = sanitizeInput(username);
   phone = sanitizeInput(phone);
   
-  // Validate inputs
   if (!username || !password || !phone) {
     throw new AppError("Username, password, and phone are required", 400);
   }
   
   const usernameCheck = validateUsername(username);
-  if (!usernameCheck.valid) {
-    throw new AppError(usernameCheck.error, 400);
-  }
+  if (!usernameCheck.valid) throw new AppError(usernameCheck.error, 400);
   
   const passwordCheck = validatePassword(password);
-  if (!passwordCheck.valid) {
-    throw new AppError(passwordCheck.error, 400);
-  }
+  if (!passwordCheck.valid) throw new AppError(passwordCheck.error, 400);
   
-  if (!validatePhone(phone)) {
-    throw new AppError("Invalid phone number format", 400);
-  }
+  if (!validatePhone(phone)) throw new AppError("Invalid phone number format", 400);
   
-  // Check if user already exists
   const existingUser = await User.findOne({ $or: [{ username }, { phone }] });
-  if (existingUser) {
-    throw new AppError("Username or phone already registered", 409);
-  }
+  if (existingUser) throw new AppError("Username or phone already registered", 409);
   
-  // Hash password with 16 character salt (8 bytes)
-  const salt = crypto.randomBytes(CONFIG.SALT_ROUNDS).toString("hex");
+  // Hash password with salt of CONFIG.SALT_BYTES
+  const salt = crypto.randomBytes(CONFIG.SALT_BYTES).toString("hex");
   const passwordHash = hashPassword(password, salt);
   
-  console.log(`[SIGNUP] Generated salt: ${salt} (length: ${salt.length})`);
-  console.log(`[SIGNUP] Generated passwordHash: ${passwordHash} (length: ${passwordHash.length})`);
+  console.log(`[SIGNUP] Generated salt length: ${salt.length} hex chars (${CONFIG.SALT_BYTES} bytes)`);
+  console.log(`[SIGNUP] Generated passwordHash length: ${passwordHash.length}`);
   
-  // Create OTP - this will throw error if SMS fails
   const otp = await createOTP(phone, "signup", {
     pendingUser: { username, passwordHash, salt, role: "Parent" }
   });
@@ -572,11 +507,7 @@ app.post("/signup/send-otp", authLimiter, otpLimiter, asyncHandler(async (req, r
     phone,
     phoneHint: phone.slice(-4),
     message: "OTP sent to your phone",
-    // In development mode, include OTP for testing
-    ...(process.env.NODE_ENV === 'development' && !CONFIG.ENABLE_SMS && {
-      _dev_otp: otp,
-      _dev_note: 'OTP included for development testing only'
-    })
+    ...(process.env.NODE_ENV === 'development' && !CONFIG.ENABLE_SMS && { _dev_otp: otp, _dev_note: 'OTP included for development testing only' })
   });
 }));
 
@@ -585,48 +516,26 @@ app.post("/signup/resend-otp", otpLimiter, asyncHandler(async (req, res) => {
   let { phone } = req.body;
   phone = sanitizeInput(phone);
   
-  if (!phone) {
-    throw new AppError("Phone number is required", 400);
-  }
+  if (!phone) throw new AppError("Phone number is required", 400);
   
-  console.log(`[SIGNUP RESEND] Resending OTP for phone: ${phone}`);
-  
-  // Find existing pending signup
   const record = await Otp.findOne({
     phone,
     type: "signup",
     pendingUser: { $exists: true }
   }).sort({ createdAt: -1 });
   
-  if (!record) {
-    console.log(`[SIGNUP RESEND] No pending signup found`);
-    throw new AppError("No pending signup found. Please start signup again.", 400);
-  }
+  if (!record) throw new AppError("No pending signup found. Please start signup again.", 400);
   
-  // Generate new OTP
   const otp = generateOTP();
   const otpHash = hashOTP(otp);
   
-  // Try to send SMS before updating record
   try {
-    await sendSMS(phone, `Your verification code is: ${otp}. Valid for 5 minutes.`);
-    
-    // Only update if SMS was sent successfully
+    await sendSMS(phone, `Your verification code is: ${otp}. Valid for ${Math.floor(CONFIG.OTP_EXPIRY / 1000)} seconds.`);
     record.otpHash = otpHash;
     record.expiresAt = new Date(Date.now() + CONFIG.OTP_EXPIRY);
     await record.save();
-    
-    console.log(`[SIGNUP RESEND] ✅ New OTP sent: ${otp}`);
-    
-    res.json({
-      success: true,
-      message: "OTP resent successfully",
-      ...(process.env.NODE_ENV === 'development' && !CONFIG.ENABLE_SMS && {
-        _dev_otp: otp
-      })
-    });
+    res.json({ success: true, message: "OTP resent successfully", ...(process.env.NODE_ENV === 'development' && !CONFIG.ENABLE_SMS && { _dev_otp: otp }) });
   } catch (err) {
-    console.error(`[SIGNUP RESEND] ❌ Failed to send SMS:`, err.message);
     throw new AppError(`Unable to resend OTP: ${err.message}`, 503);
   }
 }));
@@ -637,61 +546,24 @@ app.post("/signup/verify-otp", authLimiter, asyncHandler(async (req, res) => {
   phone = sanitizeInput(phone);
   otp = sanitizeInput(otp);
   
-  console.log(`[SIGNUP VERIFY] Verifying OTP for phone: ${phone}, OTP: ${otp}`);
+  if (!phone || !otp) throw new AppError("Phone and OTP are required", 400);
   
-  if (!phone || !otp) {
-    throw new AppError("Phone and OTP are required", 400);
-  }
-  
-  // Verify OTP
   const record = await verifyOTP(phone, otp, "signup");
+  if (!record.pendingUser) throw new AppError("Invalid signup session", 400);
   
-  if (!record.pendingUser) {
-    throw new AppError("Invalid signup session", 400);
-  }
-  
-  // Create user with exact format
   const user = await User.create({
     username: record.pendingUser.username,
     passwordHash: record.pendingUser.passwordHash,
     salt: record.pendingUser.salt,
-    phone: phone,
+    phone,
     role: record.pendingUser.role,
     verified: true
   });
   
-  console.log(`[SIGNUP VERIFY] ✓ User created:`, {
-    username: user.username,
-    salt: user.salt,
-    saltLength: user.salt.length,
-    passwordHashLength: user.passwordHash.length,
-    phone: user.phone,
-    role: user.role,
-    verified: user.verified
-  });
-  
-  // Delete OTP record
   await Otp.deleteOne({ _id: record._id });
   
-  // Generate JWT token
-  const token = generateToken({
-    userId: user._id,
-    username: user.username,
-    role: user.role,
-    phone: user.phone
-  });
-  
-  res.status(201).json({
-    success: true,
-    message: "Account created successfully",
-    token,
-    user: {
-      id: user._id,
-      username: user.username,
-      phone: user.phone,
-      role: user.role
-    }
-  });
+  const token = generateToken({ userId: user._id, username: user.username, role: user.role, phone: user.phone });
+  res.status(201).json({ success: true, message: "Account created successfully", token, user: { id: user._id, username: user.username, phone: user.phone, role: user.role } });
 }));
 
 /* ===================== LOGIN ROUTES ===================== */
@@ -701,41 +573,23 @@ app.post("/login", authLimiter, otpLimiter, asyncHandler(async (req, res) => {
   let { username, password } = req.body;
   username = sanitizeInput(username);
   
-  console.log(`[LOGIN] Attempt for username: ${username}`);
+  if (!username || !password) throw new AppError("Username and password are required", 400);
   
-  if (!username || !password) {
-    throw new AppError("Username and password are required", 400);
-  }
-  
-  // Find user
   const user = await User.findOne({ username });
-  if (!user) {
-    console.log(`[LOGIN] User not found: ${username}`);
-    // Generic error to prevent user enumeration
-    throw new AppError("Invalid credentials", 401);
-  }
+  if (!user) throw new AppError("Invalid credentials", 401);
   
-  // Verify password
   const passwordHash = hashPassword(password, user.salt);
-  if (passwordHash !== user.passwordHash) {
+  // Use timing-safe comparison
+  if (!timingSafeEqualHex(passwordHash, user.passwordHash)) {
     console.log(`[LOGIN] Invalid password for user: ${username}`);
     throw new AppError("Invalid credentials", 401);
   }
   
   console.log(`[LOGIN] ✓ Password verified for user: ${username}`);
   
-  // Create OTP for login - this will throw error if SMS fails
   const otp = await createOTP(user.phone, "login", { userId: user._id });
   
-  res.json({
-    success: true,
-    phone: user.phone,
-    phoneHint: user.phone.slice(-4),
-    message: "OTP sent to your phone",
-    ...(process.env.NODE_ENV === 'development' && !CONFIG.ENABLE_SMS && {
-      _dev_otp: otp
-    })
-  });
+  res.json({ success: true, phone: user.phone, phoneHint: user.phone.slice(-4), message: "OTP sent to your phone", ...(process.env.NODE_ENV === 'development' && !CONFIG.ENABLE_SMS && { _dev_otp: otp }) });
 }));
 
 // Login - Resend OTP
@@ -743,48 +597,26 @@ app.post("/login/resend-otp", otpLimiter, asyncHandler(async (req, res) => {
   let { phone } = req.body;
   phone = sanitizeInput(phone);
   
-  console.log(`[LOGIN RESEND] Resending OTP for phone: ${phone}`);
+  if (!phone) throw new AppError("Phone number is required", 400);
   
-  if (!phone) {
-    throw new AppError("Phone number is required", 400);
-  }
-  
-  // Find existing login OTP
   const record = await Otp.findOne({
     phone,
     type: "login",
     userId: { $exists: true }
   }).sort({ createdAt: -1 });
   
-  if (!record) {
-    console.log(`[LOGIN RESEND] No pending login found`);
-    throw new AppError("No pending login found. Please login again.", 400);
-  }
+  if (!record) throw new AppError("No pending login found. Please login again.", 400);
   
-  // Generate new OTP
   const otp = generateOTP();
   const otpHash = hashOTP(otp);
   
-  // Try to send SMS before updating record
   try {
-    await sendSMS(phone, `Your login code is: ${otp}. Valid for 5 minutes.`);
-    
-    // Only update if SMS was sent successfully
+    await sendSMS(phone, `Your login code is: ${otp}. Valid for ${Math.floor(CONFIG.OTP_EXPIRY / 1000)} seconds.`);
     record.otpHash = otpHash;
     record.expiresAt = new Date(Date.now() + CONFIG.OTP_EXPIRY);
     await record.save();
-    
-    console.log(`[LOGIN RESEND] ✅ New OTP sent: ${otp}`);
-    
-    res.json({
-      success: true,
-      message: "OTP resent successfully",
-      ...(process.env.NODE_ENV === 'development' && !CONFIG.ENABLE_SMS && {
-        _dev_otp: otp
-      })
-    });
+    res.json({ success: true, message: "OTP resent successfully", ...(process.env.NODE_ENV === 'development' && !CONFIG.ENABLE_SMS && { _dev_otp: otp }) });
   } catch (err) {
-    console.error(`[LOGIN RESEND] ❌ Failed to send SMS:`, err.message);
     throw new AppError(`Unable to resend OTP: ${err.message}`, 503);
   }
 }));
@@ -795,54 +627,25 @@ app.post("/login/verify-otp", authLimiter, asyncHandler(async (req, res) => {
   phone = sanitizeInput(phone);
   otp = sanitizeInput(otp);
   
-  console.log(`[LOGIN VERIFY] Verifying OTP for phone: ${phone}, OTP: ${otp}`);
+  if (!phone || !otp) throw new AppError("Phone and OTP are required", 400);
   
-  if (!phone || !otp) {
-    throw new AppError("Phone and OTP are required", 400);
-  }
-  
-  // Verify OTP
   const record = await verifyOTP(phone, otp, "login");
+  if (!record.userId) throw new AppError("Invalid login session", 400);
   
-  if (!record.userId) {
-    throw new AppError("Invalid login session", 400);
-  }
-  
-  // Get user
   const user = await User.findById(record.userId);
-  if (!user) {
-    throw new AppError("User not found", 404);
-  }
+  if (!user) throw new AppError("User not found", 404);
   
-  console.log(`[LOGIN VERIFY] ✓ User logged in: ${user.username}`);
-  
-  // Delete OTP record
   await Otp.deleteOne({ _id: record._id });
   
-  // Generate JWT token
-  const token = generateToken({
-    userId: user._id,
-    username: user.username,
-    role: user.role,
-    phone: user.phone
-  });
-  
-  res.json({
-    success: true,
-    message: "Login successful",
-    token,
-    user: {
-      id: user._id,
-      username: user.username,
-      phone: user.phone,
-      role: user.role
-    }
-  });
+  const token = generateToken({ userId: user._id, username: user.username, role: user.role, phone: user.phone });
+  res.json({ success: true, message: "Login successful", token, user: { id: user._id, username: user.username, phone: user.phone, role: user.role } });
 }));
 
 /* ===================== CHILD REGISTRATION ===================== */
 
-// Register child - Send OTP to parent
+/* ===================== CHILD REGISTRATION ===================== */
+
+// Register child - Send OTP to CHILD's phone (not parent)
 app.post("/register-child", verifyToken, requireRole("Parent"), asyncHandler(async (req, res) => {
   let { childPhone, childName } = req.body;
   childPhone = sanitizeInput(childPhone);
@@ -850,166 +653,130 @@ app.post("/register-child", verifyToken, requireRole("Parent"), asyncHandler(asy
   
   const parentPhone = req.user.phone;
   
-  if (!childPhone || !childName) {
-    throw new AppError("Child phone and name are required", 400);
-  }
+  if (!childPhone || !childName) throw new AppError("Child phone and name are required", 400);
+  if (!validatePhone(childPhone)) throw new AppError("Invalid child phone number", 400);
+  if (childPhone === parentPhone) throw new AppError("Child phone cannot be same as parent phone", 400);
   
-  if (!validatePhone(childPhone)) {
-    throw new AppError("Invalid child phone number", 400);
-  }
-  
-  if (childPhone === parentPhone) {
-    throw new AppError("Child phone cannot be same as parent phone", 400);
-  }
-  
-  // Check if child is already registered with this parent
   const existing = await ParentChild.findOne({ parentPhone, childPhone });
-  if (existing) {
-    throw new AppError("Child already registered", 409);
-  }
+  if (existing) throw new AppError("Child already registered", 409);
   
-  // Create OTP for parent verification - this will throw error if SMS fails
-  const otp = await createOTP(parentPhone, "child-registration", {
-    pendingRegistration: { parentPhone, childPhone, childName }
+  // Send OTP to CHILD's phone, not parent's phone
+  const otp = await createOTP(childPhone, "child-registration", { 
+    pendingRegistration: { parentPhone, childPhone, childName } 
   });
   
-  res.json({
-    success: true,
-    message: "OTP sent to parent phone for verification",
-    ...(process.env.NODE_ENV === 'development' && !CONFIG.ENABLE_SMS && {
-      _dev_otp: otp
-    })
+  res.json({ 
+    success: true, 
+    message: "OTP sent to child's phone for verification", 
+    childPhoneHint: childPhone.slice(-4),
+    ...(process.env.NODE_ENV === 'development' && !CONFIG.ENABLE_SMS && { _dev_otp: otp }) 
   });
 }));
 
-// Verify parent OTP and complete child registration
+// Verify child's OTP and complete child registration
 app.post("/verify-parent", verifyToken, requireRole("Parent"), asyncHandler(async (req, res) => {
-  let { otp } = req.body;
+  let { otp, childPhone } = req.body;
   otp = sanitizeInput(otp);
-  
+  childPhone = sanitizeInput(childPhone);
   const parentPhone = req.user.phone;
   
-  if (!otp) {
-    throw new AppError("OTP is required", 400);
+  if (!otp) throw new AppError("OTP is required", 400);
+  if (!childPhone) throw new AppError("Child phone is required", 400);
+  
+  // Verify OTP from child's phone
+  const record = await verifyOTP(childPhone, otp, "child-registration");
+  if (!record.pendingRegistration) throw new AppError("Invalid registration session", 400);
+  
+  // Verify that the parent making the request matches the pending registration
+  if (record.pendingRegistration.parentPhone !== parentPhone) {
+    throw new AppError("Unauthorized: Registration was initiated by a different parent", 403);
   }
   
-  // Verify OTP
-  const record = await verifyOTP(parentPhone, otp, "child-registration");
-  
-  if (!record.pendingRegistration) {
-    throw new AppError("Invalid registration session", 400);
-  }
-  
-  const { childPhone, childName } = record.pendingRegistration;
-  
-  // Create parent-child link
-  await ParentChild.create({
-    parentPhone,
-    childPhone,
-    childName,
-    createdAt: new Date()
-  });
-  
-  // Delete OTP record
+  const { childName } = record.pendingRegistration;
+  await ParentChild.create({ parentPhone, childPhone, childName, createdAt: new Date() });
   await Otp.deleteOne({ _id: record._id });
   
-  res.status(201).json({
-    success: true,
-    message: "Child registered successfully",
-    child: { childPhone, childName }
+  res.status(201).json({ 
+    success: true, 
+    message: "Child registered successfully", 
+    child: { childPhone, childName } 
   });
 }));
 
 // Get all registered children for a parent
 app.get("/my-children", verifyToken, requireRole("Parent"), asyncHandler(async (req, res) => {
   const parentPhone = req.user.phone;
-  
   const children = await ParentChild.find({ parentPhone }).select('childPhone childName createdAt');
-  
-  res.json({
-    success: true,
-    children
-  });
+  res.json({ success: true, children });
 }));
 
 // Remove a child
 app.delete("/remove-child/:childPhone", verifyToken, requireRole("Parent"), asyncHandler(async (req, res) => {
   const parentPhone = req.user.phone;
   const childPhone = sanitizeInput(req.params.childPhone);
-  
   const result = await ParentChild.deleteOne({ parentPhone, childPhone });
-  
-  if (result.deletedCount === 0) {
-    throw new AppError("Child not found", 404);
-  }
-  
-  res.json({
-    success: true,
-    message: "Child removed successfully"
-  });
+  if (result.deletedCount === 0) throw new AppError("Child not found", 404);
+  res.json({ success: true, message: "Child removed successfully" });
 }));
 
 /* ===================== LOCATION TRACKING ===================== */
 
-// Update child location
+// Update child location (device -> server)
 app.post("/update-location", asyncHandler(async (req, res) => {
   let { childPhone, latitude, longitude, accuracy, timestamp } = req.body;
-  
   childPhone = sanitizeInput(childPhone);
   
   if (!childPhone || latitude === undefined || longitude === undefined) {
     throw new AppError("Child phone, latitude, and longitude are required", 400);
   }
   
-  // Validate coordinates
   const lat = parseFloat(latitude);
   const lon = parseFloat(longitude);
   
   if (isNaN(lat) || lat < -90 || lat > 90) {
     throw new AppError("Invalid latitude", 400);
   }
-  
   if (isNaN(lon) || lon < -180 || lon > 180) {
     throw new AppError("Invalid longitude", 400);
   }
   
-  // Encrypt location data
+  console.log(`[UPDATE LOCATION] Received location for ${childPhone}: lat=${lat}, lon=${lon}`);
+  
+  // Encrypt location data using AES-GCM
   const encryptedLat = encrypt(lat.toString());
   const encryptedLon = encrypt(lon.toString());
   
-  // Store location
+  console.log(`[UPDATE LOCATION] Encrypted data lengths: lat=${encryptedLat.length}, lon=${encryptedLon.length}`);
+  
   await ChildLocation.create({
     childPhone,
     latitude: encryptedLat,
     longitude: encryptedLon,
     accuracy: accuracy || null,
-    timestamp: timestamp ? new Date(timestamp) : new Date()
+    timestamp: timestamp ? new Date(timestamp) : new Date(),
+    createdAt: new Date()
   });
   
-  res.json({
-    success: true,
-    message: "Location updated successfully"
-  });
+  console.log(`[UPDATE LOCATION] ✅ Location saved successfully`);
+  
+  res.json({ success: true, message: "Location updated successfully" });
 }));
 
 // Track child location (parent)
 app.post("/track-location", verifyToken, requireRole("Parent"), asyncHandler(async (req, res) => {
   let { childPhone } = req.body;
   childPhone = sanitizeInput(childPhone);
-  
   const parentPhone = req.user.phone;
   
-  if (!childPhone) {
-    throw new AppError("Child phone is required", 400);
-  }
+  if (!childPhone) throw new AppError("Child phone is required", 400);
   
-  // Verify parent-child relationship
+  // Verify parent has access to this child
   const link = await ParentChild.findOne({ parentPhone, childPhone });
   if (!link) {
     throw new AppError("Unauthorized: Child not registered with your account", 403);
   }
   
-  // Get latest location
+  // Fetch latest location
   const location = await ChildLocation.findOne({ childPhone })
     .sort({ createdAt: -1 })
     .limit(1);
@@ -1018,55 +785,78 @@ app.post("/track-location", verifyToken, requireRole("Parent"), asyncHandler(asy
     throw new AppError("No location data available", 404);
   }
   
-  // Decrypt location
-  const latitude = decrypt(location.latitude);
-  const longitude = decrypt(location.longitude);
+  console.log(`[TRACK LOCATION] Decrypting location for ${childPhone}`);
+  console.log(`[TRACK LOCATION] Encrypted data: lat length=${location.latitude.length}, lon length=${location.longitude.length}`);
   
-  res.json({
-    success: true,
-    childName: link.childName,
-    location: {
-      latitude: parseFloat(latitude),
-      longitude: parseFloat(longitude),
-      accuracy: location.accuracy,
-      timestamp: location.timestamp || location.createdAt,
-      lastUpdated: location.createdAt
-    }
-  });
+  try {
+    // Decrypt location data
+    const latitude = decrypt(location.latitude);
+    const longitude = decrypt(location.longitude);
+    
+    console.log(`[TRACK LOCATION] ✅ Decrypted successfully: lat=${latitude}, lon=${longitude}`);
+    
+    res.json({
+      success: true,
+      childName: link.childName,
+      location: {
+        latitude: parseFloat(latitude),
+        longitude: parseFloat(longitude),
+        accuracy: location.accuracy,
+        timestamp: location.timestamp || location.createdAt,
+        lastUpdated: location.createdAt
+      }
+    });
+  } catch (decryptError) {
+    console.error(`[TRACK LOCATION] ❌ Decryption failed:`, decryptError);
+    throw new AppError("Failed to decrypt location data. Data may be corrupted.", 500);
+  }
 }));
 
 // Get location history
 app.get("/location-history/:childPhone", verifyToken, requireRole("Parent"), asyncHandler(async (req, res) => {
   const childPhone = sanitizeInput(req.params.childPhone);
   const parentPhone = req.user.phone;
-  const limit = parseInt(req.query.limit) || 50;
-  const skip = parseInt(req.query.skip) || 0;
+  const limit = Math.min(parseInt(req.query.limit || "50", 10), 100);
+  const skip = parseInt(req.query.skip || "0", 10);
   
-  // Verify parent-child relationship
+  // Verify parent has access to this child
   const link = await ParentChild.findOne({ parentPhone, childPhone });
   if (!link) {
     throw new AppError("Unauthorized: Child not registered with your account", 403);
   }
   
-  // Get location history
   const locations = await ChildLocation.find({ childPhone })
     .sort({ createdAt: -1 })
-    .limit(Math.min(limit, 100))
+    .limit(limit)
     .skip(skip);
   
-  // Decrypt and format locations
-  const decryptedLocations = locations.map(loc => ({
-    latitude: parseFloat(decrypt(loc.latitude)),
-    longitude: parseFloat(decrypt(loc.longitude)),
-    accuracy: loc.accuracy,
-    timestamp: loc.timestamp || loc.createdAt
-  }));
+  console.log(`[LOCATION HISTORY] Found ${locations.length} locations for ${childPhone}`);
+  
+  // Decrypt all locations
+  const decryptedLocations = locations.map((loc, index) => {
+    try {
+      const lat = decrypt(loc.latitude);
+      const lon = decrypt(loc.longitude);
+      
+      return {
+        latitude: parseFloat(lat),
+        longitude: parseFloat(lon),
+        accuracy: loc.accuracy,
+        timestamp: loc.timestamp || loc.createdAt
+      };
+    } catch (err) {
+      console.error(`[LOCATION HISTORY] Failed to decrypt location ${index}:`, err);
+      return null;
+    }
+  }).filter(loc => loc !== null); // Remove failed decryptions
+  
+  console.log(`[LOCATION HISTORY] Successfully decrypted ${decryptedLocations.length} locations`);
   
   res.json({
     success: true,
     childName: link.childName,
     locations: decryptedLocations,
-    total: locations.length
+    total: decryptedLocations.length
   });
 }));
 
@@ -1075,21 +865,8 @@ app.get("/location-history/:childPhone", verifyToken, requireRole("Parent"), asy
 // Get current user profile
 app.get("/profile", verifyToken, asyncHandler(async (req, res) => {
   const user = await User.findById(req.user.userId).select('-passwordHash -salt');
-  
-  if (!user) {
-    throw new AppError("User not found", 404);
-  }
-  
-  res.json({
-    success: true,
-    user: {
-      id: user._id,
-      username: user.username,
-      phone: user.phone,
-      role: user.role,
-      verified: user.verified
-    }
-  });
+  if (!user) throw new AppError("User not found", 404);
+  res.json({ success: true, user: { id: user._id, username: user.username, phone: user.phone, role: user.role, verified: user.verified } });
 }));
 
 // Update user profile
@@ -1098,76 +875,41 @@ app.patch("/profile", verifyToken, asyncHandler(async (req, res) => {
   
   if (username) {
     const usernameCheck = validateUsername(username);
-    if (!usernameCheck.valid) {
-      throw new AppError(usernameCheck.error, 400);
-    }
+    if (!usernameCheck.valid) throw new AppError(usernameCheck.error, 400);
     
-    // Check if username is already taken
-    const existing = await User.findOne({
-      username,
-      _id: { $ne: req.user.userId }
-    });
-    
-    if (existing) {
-      throw new AppError("Username already taken", 409);
-    }
+    const existing = await User.findOne({ username, _id: { $ne: req.user.userId } });
+    if (existing) throw new AppError("Username already taken", 409);
   }
   
-  const user = await User.findByIdAndUpdate(
-    req.user.userId,
-    { username },
-    { new: true, runValidators: true }
-  ).select('-passwordHash -salt');
-  
-  res.json({
-    success: true,
-    message: "Profile updated",
-    user
-  });
+  const user = await User.findByIdAndUpdate(req.user.userId, { username }, { new: true, runValidators: true }).select('-passwordHash -salt');
+  res.json({ success: true, message: "Profile updated", user });
 }));
 
 // Change password
 app.post("/change-password", verifyToken, asyncHandler(async (req, res) => {
   const { currentPassword, newPassword } = req.body;
+  if (!currentPassword || !newPassword) throw new AppError("Current and new password are required", 400);
   
-  if (!currentPassword || !newPassword) {
-    throw new AppError("Current and new password are required", 400);
-  }
-  
-  // Validate new password
   const passwordCheck = validatePassword(newPassword);
-  if (!passwordCheck.valid) {
-    throw new AppError(passwordCheck.error, 400);
-  }
+  if (!passwordCheck.valid) throw new AppError(passwordCheck.error, 400);
   
-  // Get user
   const user = await User.findById(req.user.userId);
-  if (!user) {
-    throw new AppError("User not found", 404);
-  }
+  if (!user) throw new AppError("User not found", 404);
   
-  // Verify current password
   const currentHash = hashPassword(currentPassword, user.salt);
-  if (currentHash !== user.passwordHash) {
-    throw new AppError("Current password is incorrect", 401);
-  }
+  if (!timingSafeEqualHex(currentHash, user.passwordHash)) throw new AppError("Current password is incorrect", 401);
   
-  // Hash new password with 16 character salt (8 bytes)
-  const newSalt = crypto.randomBytes(CONFIG.SALT_ROUNDS).toString("hex");
+  const newSalt = crypto.randomBytes(CONFIG.SALT_BYTES).toString("hex");
   const newHash = hashPassword(newPassword, newSalt);
   
-  console.log(`[PASSWORD CHANGE] New salt: ${newSalt} (length: ${newSalt.length})`);
+  console.log(`[PASSWORD CHANGE] New salt length: ${newSalt.length} hex chars (${CONFIG.SALT_BYTES} bytes)`);
   console.log(`[PASSWORD CHANGE] New passwordHash length: ${newHash.length}`);
   
-  // Update password
   user.passwordHash = newHash;
   user.salt = newSalt;
   await user.save();
   
-  res.json({
-    success: true,
-    message: "Password changed successfully"
-  });
+  res.json({ success: true, message: "Password changed successfully" });
 }));
 
 /* ===================== HEALTH CHECK ===================== */
@@ -1182,91 +924,49 @@ app.get("/health", (req, res) => {
     sms: {
       enabled: CONFIG.ENABLE_SMS,
       initialized: twilioClient !== null
+    },
+    encryption: {
+      enabled: true,
+      algorithm: "AES-256-GCM"
     }
   });
 });
 
 /* ===================== ERROR HANDLING ===================== */
 
-// 404 handler - MUST return JSON
+// 404 handler
 app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    error: "Route not found",
-    path: req.path,
-    method: req.method
-  });
+  res.status(404).json({ success: false, error: "Route not found", path: req.path, method: req.method });
 });
 
-// Global error handler - ALWAYS returns JSON
+// Global error handler
 app.use((err, req, res, next) => {
-  // Log error for debugging
   console.error("Error:", err);
   
-  // Default error response
-  let statusCode = 500;
-  let errorMessage = "Internal server error";
-  
-  // Mongoose validation error
   if (err.name === "ValidationError") {
-    statusCode = 400;
     const errors = Object.values(err.errors).map(e => e.message);
-    return res.status(statusCode).json({
-      success: false,
-      error: "Validation error",
-      details: errors
-    });
+    return res.status(400).json({ success: false, error: "Validation error", details: errors });
   }
-  
-  // Mongoose duplicate key error
   if (err.code === 11000) {
-    statusCode = 409;
-    return res.status(statusCode).json({
-      success: false,
-      error: "Duplicate entry",
-      field: Object.keys(err.keyPattern || {})[0]
-    });
+    return res.status(409).json({ success: false, error: "Duplicate entry", field: Object.keys(err.keyPattern || {})[0] });
   }
-  
-  // JWT errors
   if (err.name === "JsonWebTokenError") {
-    statusCode = 401;
-    return res.status(statusCode).json({ 
-      success: false,
-      error: "Invalid token" 
-    });
+    return res.status(401).json({ success: false, error: "Invalid token" });
   }
-  
   if (err.name === "TokenExpiredError") {
-    statusCode = 401;
-    return res.status(statusCode).json({ 
-      success: false,
-      error: "Token expired" 
-    });
+    return res.status(401).json({ success: false, error: "Token expired" });
   }
-  
-  // Operational errors (AppError)
   if (err.isOperational) {
-    return res.status(err.statusCode).json({
-      success: false,
-      error: err.message
-    });
+    return res.status(err.statusCode).json({ success: false, error: err.message });
   }
-  
-  // JSON parsing error
   if (err.type === 'entity.parse.failed') {
-    return res.status(400).json({
-      success: false,
-      error: 'Invalid JSON format'
-    });
+    return res.status(400).json({ success: false, error: 'Invalid JSON format' });
   }
-  
-  // Generic programming or unknown errors
+
+  const statusCode = err.statusCode || 500;
   res.status(statusCode).json({
     success: false,
-    error: process.env.NODE_ENV === "production" 
-      ? "Internal server error" 
-      : err.message,
+    error: process.env.NODE_ENV === "production" ? "Internal server error" : err.message,
     ...(process.env.NODE_ENV !== "production" && { stack: err.stack })
   });
 });
@@ -1279,17 +979,12 @@ const startServer = (port) => {
     console.log("🚀 SERVER STARTED");
     console.log("=".repeat(60));
     console.log(`📍 Port: ${port}`);
-    console.log(`🔒 JWT Auth: Enabled`);
+    console.log(`🔒 JWT Auth: ${Boolean(process.env.JWT_SECRET) ? 'Enabled' : 'Using fallback secret'}`);
+    console.log(`🔐 Encryption: AES-256-GCM Enabled`);
     console.log(`📱 SMS Service: ${CONFIG.ENABLE_SMS ? '✅ Enabled' : '❌ Disabled'}`);
-    if (CONFIG.ENABLE_SMS) {
-      console.log(`📲 Twilio Client: ${twilioClient ? '✅ Initialized' : '❌ Failed'}`);
-      if (twilioClient) {
-        console.log(`📞 From Number: ${process.env.TWILIO_PHONE_NUMBER}`);
-      }
-    }
+    if (CONFIG.ENABLE_SMS) console.log(`📞 From Number: ${process.env.TWILIO_PHONE_NUMBER}`);
     console.log(`🔐 Environment: ${process.env.NODE_ENV || "development"}`);
-    console.log(`🌐 CORS: Configured`);
-    console.log(`🔑 Salt length: 16 characters (8 bytes)`);
+    console.log(`🔑 Salt bytes: ${CONFIG.SALT_BYTES} bytes`);
     console.log("=".repeat(60) + "\n");
   }).on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
@@ -1301,13 +996,10 @@ const startServer = (port) => {
     }
   });
 
-  // Handle unhandled promise rejections
   process.on("unhandledRejection", (err) => {
     console.error("UNHANDLED REJECTION! 💥 Shutting down...");
     console.error(err);
-    server.close(() => {
-      process.exit(1);
-    });
+    server.close(() => process.exit(1));
   });
 
   return server;
