@@ -21,7 +21,7 @@ const CONFIG = {
   JWT_EXPIRES_IN: "7d",
   OTP_EXPIRY: 5 * 60 * 1000, // 5 minutes
   OTP_LENGTH: 6,
-  SALT_ROUNDS: 16,
+  SALT_ROUNDS: 8, // 8 bytes = 16 hex characters
   PBKDF2_ITERATIONS: 100000,
   AES_KEY: process.env.AES_KEY 
     ? Buffer.from(process.env.AES_KEY, "hex") 
@@ -143,7 +143,7 @@ const gracefulShutdown = async (signal) => {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-/* ===================== SMS SERVICE ===================== */
+/* ===================== SMS SERVICE (IMPROVED) ===================== */
 let twilioClient = null;
 
 if (CONFIG.ENABLE_SMS) {
@@ -159,22 +159,60 @@ if (CONFIG.ENABLE_SMS) {
 }
 
 const sendSMS = async (to, body) => {
-  if (!CONFIG.ENABLE_SMS || !twilioClient) {
-    console.log(`[SMS DISABLED] To: ${to}, Message: ${body}`);
-    return false;
+  // If SMS is disabled
+  if (!CONFIG.ENABLE_SMS) {
+    console.log(`\n${'='.repeat(60)}`);
+    console.log(`📱 [SMS DISABLED] OTP for ${to}:`);
+    console.log(`Message: ${body}`);
+    console.log('='.repeat(60) + '\n');
+    
+    // In development mode, allow the flow to continue
+    if (process.env.NODE_ENV === 'development') {
+      return { success: true, message: 'Development mode - check console for OTP' };
+    }
+    
+    // In production, throw error if SMS is disabled
+    throw new Error('SMS service is currently disabled. Please contact support.');
+  }
+  
+  // If Twilio client not initialized
+  if (!twilioClient) {
+    console.error('❌ Twilio client not initialized');
+    throw new Error('SMS service is not available. Please try again later.');
   }
   
   try {
-    await twilioClient.messages.create({
+    const message = await twilioClient.messages.create({
       body,
       from: process.env.TWILIO_PHONE_NUMBER,
       to
     });
-    console.log(`✅ SMS sent to ${to}`);
-    return true;
+    console.log(`✅ SMS sent to ${to}, SID: ${message.sid}`);
+    return { success: true, sid: message.sid };
   } catch (err) {
-    console.error("❌ SMS error:", err.message);
-    return false;
+    console.error("❌ SMS error:", {
+      message: err.message,
+      code: err.code,
+      status: err.status,
+      moreInfo: err.moreInfo
+    });
+    
+    // Provide user-friendly error messages based on Twilio error codes
+    let userMessage = 'Failed to send SMS. Please try again.';
+    
+    if (err.code === 21211) {
+      userMessage = 'Invalid phone number format. Please check and try again.';
+    } else if (err.code === 21408) {
+      userMessage = 'This phone number is not verified. Please verify it in your Twilio account.';
+    } else if (err.code === 21610) {
+      userMessage = 'Unable to send SMS to this number. It may have opted out.';
+    } else if (err.code === 20003) {
+      userMessage = 'SMS service authentication failed. Please contact support.';
+    } else if (err.code === 21606) {
+      userMessage = 'SMS service configuration error. Please contact support.';
+    }
+    
+    throw new Error(userMessage);
   }
 };
 
@@ -351,7 +389,7 @@ const asyncHandler = (fn) => {
   };
 };
 
-/* ===================== OTP MANAGEMENT ===================== */
+/* ===================== OTP MANAGEMENT (IMPROVED) ===================== */
 
 const createOTP = async (phone, type, additionalData = {}) => {
   const otp = generateOTP();
@@ -378,8 +416,18 @@ const createOTP = async (phone, type, additionalData = {}) => {
     expiresAt: otpRecord.expiresAt
   });
   
-  // Send SMS if enabled
-  await sendSMS(phone, `Your verification code is: ${otp}. Valid for 5 minutes.`);
+  // Try to send SMS
+  try {
+    await sendSMS(phone, `Your verification code is: ${otp}. Valid for 5 minutes.`);
+    console.log(`[CREATE OTP] ✅ SMS sent successfully`);
+  } catch (err) {
+    // If SMS fails, delete the OTP record since user can't verify
+    console.error(`[CREATE OTP] ❌ Failed to send SMS:`, err.message);
+    await Otp.deleteOne({ _id: otpRecord._id });
+    
+    // Throw error with user-friendly message
+    throw new AppError(`Unable to send OTP: ${err.message}`, 503);
+  }
   
   return otp;
 };
@@ -448,8 +496,10 @@ app.get("/", (req, res) => {
       auth: {
         signup: "/signup/send-otp",
         signupVerify: "/signup/verify-otp",
+        signupResend: "/signup/resend-otp",
         login: "/login",
-        loginVerify: "/login/verify-otp"
+        loginVerify: "/login/verify-otp",
+        loginResend: "/login/resend-otp"
       },
       child: {
         register: "/register-child",
@@ -505,12 +555,15 @@ app.post("/signup/send-otp", authLimiter, otpLimiter, asyncHandler(async (req, r
     throw new AppError("Username or phone already registered", 409);
   }
   
-  // Hash password
+  // Hash password with 16 character salt (8 bytes)
   const salt = crypto.randomBytes(CONFIG.SALT_ROUNDS).toString("hex");
   const passwordHash = hashPassword(password, salt);
   
-  // Create OTP
-  await createOTP(phone, "signup", {
+  console.log(`[SIGNUP] Generated salt: ${salt} (length: ${salt.length})`);
+  console.log(`[SIGNUP] Generated passwordHash: ${passwordHash} (length: ${passwordHash.length})`);
+  
+  // Create OTP - this will throw error if SMS fails
+  const otp = await createOTP(phone, "signup", {
     pendingUser: { username, passwordHash, salt, role: "Parent" }
   });
   
@@ -518,7 +571,12 @@ app.post("/signup/send-otp", authLimiter, otpLimiter, asyncHandler(async (req, r
     success: true,
     phone,
     phoneHint: phone.slice(-4),
-    message: "OTP sent to your phone"
+    message: "OTP sent to your phone",
+    // In development mode, include OTP for testing
+    ...(process.env.NODE_ENV === 'development' && !CONFIG.ENABLE_SMS && {
+      _dev_otp: otp,
+      _dev_note: 'OTP included for development testing only'
+    })
   });
 }));
 
@@ -545,16 +603,32 @@ app.post("/signup/resend-otp", otpLimiter, asyncHandler(async (req, res) => {
     throw new AppError("No pending signup found. Please start signup again.", 400);
   }
   
-  // Generate new OTP and update record
+  // Generate new OTP
   const otp = generateOTP();
-  record.otpHash = hashOTP(otp);
-  record.expiresAt = new Date(Date.now() + CONFIG.OTP_EXPIRY);
-  await record.save();
+  const otpHash = hashOTP(otp);
   
-  console.log(`[SIGNUP RESEND] New OTP for ${phone}: ${otp}`);
-  await sendSMS(phone, `Your verification code is: ${otp}. Valid for 5 minutes.`);
-  
-  res.json({ success: true, message: "OTP resent successfully" });
+  // Try to send SMS before updating record
+  try {
+    await sendSMS(phone, `Your verification code is: ${otp}. Valid for 5 minutes.`);
+    
+    // Only update if SMS was sent successfully
+    record.otpHash = otpHash;
+    record.expiresAt = new Date(Date.now() + CONFIG.OTP_EXPIRY);
+    await record.save();
+    
+    console.log(`[SIGNUP RESEND] ✅ New OTP sent: ${otp}`);
+    
+    res.json({
+      success: true,
+      message: "OTP resent successfully",
+      ...(process.env.NODE_ENV === 'development' && !CONFIG.ENABLE_SMS && {
+        _dev_otp: otp
+      })
+    });
+  } catch (err) {
+    console.error(`[SIGNUP RESEND] ❌ Failed to send SMS:`, err.message);
+    throw new AppError(`Unable to resend OTP: ${err.message}`, 503);
+  }
 }));
 
 // Signup - Verify OTP
@@ -576,14 +650,25 @@ app.post("/signup/verify-otp", authLimiter, asyncHandler(async (req, res) => {
     throw new AppError("Invalid signup session", 400);
   }
   
-  // Create user
+  // Create user with exact format
   const user = await User.create({
-    ...record.pendingUser,
-    phone,
+    username: record.pendingUser.username,
+    passwordHash: record.pendingUser.passwordHash,
+    salt: record.pendingUser.salt,
+    phone: phone,
+    role: record.pendingUser.role,
     verified: true
   });
   
-  console.log(`[SIGNUP VERIFY] ✓ User created: ${user.username}`);
+  console.log(`[SIGNUP VERIFY] ✓ User created:`, {
+    username: user.username,
+    salt: user.salt,
+    saltLength: user.salt.length,
+    passwordHashLength: user.passwordHash.length,
+    phone: user.phone,
+    role: user.role,
+    verified: user.verified
+  });
   
   // Delete OTP record
   await Otp.deleteOne({ _id: record._id });
@@ -639,14 +724,17 @@ app.post("/login", authLimiter, otpLimiter, asyncHandler(async (req, res) => {
   
   console.log(`[LOGIN] ✓ Password verified for user: ${username}`);
   
-  // Create OTP for login
-  await createOTP(user.phone, "login", { userId: user._id });
+  // Create OTP for login - this will throw error if SMS fails
+  const otp = await createOTP(user.phone, "login", { userId: user._id });
   
   res.json({
     success: true,
     phone: user.phone,
     phoneHint: user.phone.slice(-4),
-    message: "OTP sent to your phone"
+    message: "OTP sent to your phone",
+    ...(process.env.NODE_ENV === 'development' && !CONFIG.ENABLE_SMS && {
+      _dev_otp: otp
+    })
   });
 }));
 
@@ -675,14 +763,30 @@ app.post("/login/resend-otp", otpLimiter, asyncHandler(async (req, res) => {
   
   // Generate new OTP
   const otp = generateOTP();
-  record.otpHash = hashOTP(otp);
-  record.expiresAt = new Date(Date.now() + CONFIG.OTP_EXPIRY);
-  await record.save();
+  const otpHash = hashOTP(otp);
   
-  console.log(`[LOGIN RESEND] New OTP for ${phone}: ${otp}`);
-  await sendSMS(phone, `Your login code is: ${otp}. Valid for 5 minutes.`);
-  
-  res.json({ success: true, message: "OTP resent successfully" });
+  // Try to send SMS before updating record
+  try {
+    await sendSMS(phone, `Your login code is: ${otp}. Valid for 5 minutes.`);
+    
+    // Only update if SMS was sent successfully
+    record.otpHash = otpHash;
+    record.expiresAt = new Date(Date.now() + CONFIG.OTP_EXPIRY);
+    await record.save();
+    
+    console.log(`[LOGIN RESEND] ✅ New OTP sent: ${otp}`);
+    
+    res.json({
+      success: true,
+      message: "OTP resent successfully",
+      ...(process.env.NODE_ENV === 'development' && !CONFIG.ENABLE_SMS && {
+        _dev_otp: otp
+      })
+    });
+  } catch (err) {
+    console.error(`[LOGIN RESEND] ❌ Failed to send SMS:`, err.message);
+    throw new AppError(`Unable to resend OTP: ${err.message}`, 503);
+  }
 }));
 
 // Login - Verify OTP
@@ -764,14 +868,17 @@ app.post("/register-child", verifyToken, requireRole("Parent"), asyncHandler(asy
     throw new AppError("Child already registered", 409);
   }
   
-  // Create OTP for parent verification
-  await createOTP(parentPhone, "child-registration", {
+  // Create OTP for parent verification - this will throw error if SMS fails
+  const otp = await createOTP(parentPhone, "child-registration", {
     pendingRegistration: { parentPhone, childPhone, childName }
   });
   
   res.json({
     success: true,
-    message: "OTP sent to parent phone for verification"
+    message: "OTP sent to parent phone for verification",
+    ...(process.env.NODE_ENV === 'development' && !CONFIG.ENABLE_SMS && {
+      _dev_otp: otp
+    })
   });
 }));
 
@@ -980,8 +1087,7 @@ app.get("/profile", verifyToken, asyncHandler(async (req, res) => {
       username: user.username,
       phone: user.phone,
       role: user.role,
-      verified: user.verified,
-      createdAt: user.createdAt
+      verified: user.verified
     }
   });
 }));
@@ -1046,9 +1152,12 @@ app.post("/change-password", verifyToken, asyncHandler(async (req, res) => {
     throw new AppError("Current password is incorrect", 401);
   }
   
-  // Hash new password
+  // Hash new password with 16 character salt (8 bytes)
   const newSalt = crypto.randomBytes(CONFIG.SALT_ROUNDS).toString("hex");
   const newHash = hashPassword(newPassword, newSalt);
+  
+  console.log(`[PASSWORD CHANGE] New salt: ${newSalt} (length: ${newSalt.length})`);
+  console.log(`[PASSWORD CHANGE] New passwordHash length: ${newHash.length}`);
   
   // Update password
   user.passwordHash = newHash;
@@ -1069,7 +1178,11 @@ app.get("/health", (req, res) => {
     status: "ok",
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    mongodb: mongoose.connection.readyState === 1 ? "connected" : "disconnected"
+    mongodb: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+    sms: {
+      enabled: CONFIG.ENABLE_SMS,
+      initialized: twilioClient !== null
+    }
   });
 });
 
@@ -1162,12 +1275,22 @@ app.use((err, req, res, next) => {
 
 const startServer = (port) => {
   const server = app.listen(port, () => {
-    console.log("🚀 Server started");
+    console.log("\n" + "=".repeat(60));
+    console.log("🚀 SERVER STARTED");
+    console.log("=".repeat(60));
     console.log(`📍 Port: ${port}`);
     console.log(`🔒 JWT Auth: Enabled`);
-    console.log(`📱 SMS: ${CONFIG.ENABLE_SMS ? "Enabled" : "Disabled"}`);
+    console.log(`📱 SMS Service: ${CONFIG.ENABLE_SMS ? '✅ Enabled' : '❌ Disabled'}`);
+    if (CONFIG.ENABLE_SMS) {
+      console.log(`📲 Twilio Client: ${twilioClient ? '✅ Initialized' : '❌ Failed'}`);
+      if (twilioClient) {
+        console.log(`📞 From Number: ${process.env.TWILIO_PHONE_NUMBER}`);
+      }
+    }
     console.log(`🔐 Environment: ${process.env.NODE_ENV || "development"}`);
     console.log(`🌐 CORS: Configured`);
+    console.log(`🔑 Salt length: 16 characters (8 bytes)`);
+    console.log("=".repeat(60) + "\n");
   }).on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
       console.log(`⚠️  Port ${port} is busy, trying ${port + 1}...`);
