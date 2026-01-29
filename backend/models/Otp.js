@@ -1,4 +1,4 @@
-// models/Otp.js
+// models/Otp.js - FIXED VERSION
 const mongoose = require("mongoose");
 
 const OtpSchema = new mongoose.Schema(
@@ -16,7 +16,7 @@ const OtpSchema = new mongoose.Schema(
     type: {
       type: String,
       required: [true, "OTP type is required"],
-      enum: ["signup", "login", "child-registration"],
+      enum: ["signup", "login", "child-registration", "forgot-password"],  // ✅ ADDED forgot-password
       index: true
     },
     expiresAt: {
@@ -61,7 +61,7 @@ OtpSchema.index({ phone: 1, type: 1 });
 // Auto-delete expired OTPs (MongoDB TTL index)
 OtpSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
-// Pre-save validation
+// Pre-save validation (UPDATED)
 OtpSchema.pre("save", function (next) {
   // Ensure type is always set
   if (!this.type) {
@@ -79,6 +79,11 @@ OtpSchema.pre("save", function (next) {
   
   if (this.type === "child-registration" && !this.pendingRegistration) {
     return next(new Error("Child registration OTP must have pendingRegistration data"));
+  }
+  
+  // ✅ ADDED: Validation for forgot-password type
+  if (this.type === "forgot-password" && !this.userId) {
+    return next(new Error("Forgot password OTP must have userId"));
   }
   
   next();

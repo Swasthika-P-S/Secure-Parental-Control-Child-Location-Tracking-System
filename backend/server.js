@@ -860,7 +860,7 @@ app.get("/location-history/:childPhone", verifyToken, requireRole("Parent"), asy
   });
 }));
 
-/* ===================== USER MANAGEMENT ===================== */
+/* ===================== USER MANAGEMENT (IMPROVED WITH DEBUGGING) ===================== */
 
 // Get current user profile
 app.get("/profile", verifyToken, asyncHandler(async (req, res) => {
@@ -910,6 +910,216 @@ app.post("/change-password", verifyToken, asyncHandler(async (req, res) => {
   await user.save();
   
   res.json({ success: true, message: "Password changed successfully" });
+}));
+
+// Forgot Password - Send OTP (IMPROVED WITH DETAILED LOGGING)
+app.post("/forgot-password/send-otp", otpLimiter, asyncHandler(async (req, res) => {
+  console.log('\n🔍 ===== FORGOT PASSWORD: SEND OTP REQUEST =====');
+  console.log('📥 Raw request body:', req.body);
+  
+  let { username } = req.body;
+  
+  console.log('📝 Username before sanitization:', JSON.stringify(username));
+  console.log('📝 Username type:', typeof username);
+  console.log('📝 Username length:', username ? username.length : 0);
+  
+  // Check if sanitizeInput exists and is a function
+  if (typeof sanitizeInput === 'function') {
+    username = sanitizeInput(username);
+    console.log('✅ Username after sanitization:', JSON.stringify(username));
+  } else {
+    console.warn('⚠️ sanitizeInput function not found, using raw username');
+    username = username?.trim();
+  }
+
+  if (!username) {
+    console.log('❌ Username validation failed: empty or null');
+    throw new AppError("Username is required", 400);
+  }
+
+  console.log('🔍 Searching for user in database...');
+  console.log('🔍 Query:', { username });
+  
+  const user = await User.findOne({ username });
+  
+  console.log('🔍 Database query result:', user ? 'USER FOUND ✅' : 'USER NOT FOUND ❌');
+  
+  if (user) {
+    console.log('👤 User details:');
+    console.log('   - ID:', user._id);
+    console.log('   - Username:', user.username);
+    console.log('   - Phone:', user.phone ? `${user.phone.substring(0, 3)}...${user.phone.slice(-4)}` : 'NO PHONE');
+    console.log('   - Verified:', user.verified);
+  } else {
+    console.log('❌ No user found with username:', username);
+    
+    // Try to find similar usernames (case-insensitive)
+    const similarUsers = await User.find({ 
+      username: new RegExp(`^${username}$`, 'i') 
+    }).limit(5);
+    
+    if (similarUsers.length > 0) {
+      console.log('💡 Found similar usernames (case-insensitive):');
+      similarUsers.forEach(u => console.log('   -', u.username));
+    }
+    
+    throw new AppError("User not found", 404);
+  }
+
+  if (!user.phone) {
+    console.log('❌ User exists but has no phone number');
+    throw new AppError("User has no phone number registered", 400);
+  }
+
+  console.log('📱 Creating OTP for phone:', user.phone);
+  
+  const otp = await createOTP(user.phone, "forgot-password", {
+    userId: user._id
+  });
+
+  console.log('✅ OTP created successfully:', otp);
+  console.log('✅ Sending success response...');
+
+  const response = {
+    success: true,
+    phone: user.phone,
+    phoneHint: user.phone.slice(-4),
+    message: "OTP sent to your registered phone"
+  };
+
+  // Add dev OTP in development mode
+  if (process.env.NODE_ENV === 'development' && !CONFIG.ENABLE_SMS) {
+    response._dev_otp = otp;
+    console.log('🔓 DEV MODE: Including OTP in response:', otp);
+  }
+
+  console.log('📤 Response:', response);
+  console.log('===== FORGOT PASSWORD: REQUEST COMPLETE =====\n');
+
+  res.json(response);
+}));
+
+// Forgot Password - Verify OTP & Reset Password (IMPROVED WITH LOGGING)
+app.post("/forgot-password/verify-otp", authLimiter, asyncHandler(async (req, res) => {
+  console.log('\n🔍 ===== FORGOT PASSWORD: VERIFY OTP REQUEST =====');
+  console.log('📥 Request body:', {
+    phone: req.body.phone,
+    otp: req.body.otp ? '****' + req.body.otp.slice(-2) : 'MISSING',
+    newPassword: req.body.newPassword ? '[PROVIDED]' : '[MISSING]'
+  });
+
+  let { phone, otp, newPassword } = req.body;
+  
+  if (typeof sanitizeInput === 'function') {
+    phone = sanitizeInput(phone);
+    otp = sanitizeInput(otp);
+  } else {
+    phone = phone?.trim();
+    otp = otp?.trim();
+  }
+
+  if (!phone || !otp || !newPassword) {
+    console.log('❌ Missing required fields');
+    throw new AppError("Phone, OTP and new password are required", 400);
+  }
+
+  console.log('🔐 Validating new password...');
+  const passwordCheck = validatePassword(newPassword);
+  if (!passwordCheck.valid) {
+    console.log('❌ Password validation failed:', passwordCheck.error);
+    throw new AppError(passwordCheck.error, 400);
+  }
+  console.log('✅ Password validation passed');
+
+  console.log('🔍 Verifying OTP...');
+  const record = await verifyOTP(phone, otp, "forgot-password");
+  console.log('✅ OTP verified, record:', record ? 'FOUND' : 'NOT FOUND');
+
+  if (!record.userId) {
+    console.log('❌ OTP record has no userId');
+    throw new AppError("Invalid reset session", 400);
+  }
+
+  console.log('🔍 Finding user with ID:', record.userId);
+  const user = await User.findById(record.userId);
+  
+  if (!user) {
+    console.log('❌ User not found for ID:', record.userId);
+    throw new AppError("User not found", 404);
+  }
+  console.log('✅ User found:', user.username);
+
+  console.log('🔐 Generating new password hash...');
+  const newSalt = crypto.randomBytes(CONFIG.SALT_BYTES).toString("hex");
+  const newHash = hashPassword(newPassword, newSalt);
+
+  console.log('💾 Updating user password...');
+  user.passwordHash = newHash;
+  user.salt = newSalt;
+  await user.save();
+  console.log('✅ Password updated successfully');
+
+  console.log('🗑️ Deleting OTP record...');
+  await Otp.deleteOne({ _id: record._id });
+  console.log('✅ OTP record deleted');
+
+  console.log('✅ Password reset successful for user:', user.username);
+  console.log('===== FORGOT PASSWORD: VERIFY COMPLETE =====\n');
+
+  res.json({ success: true, message: "Password reset successful. You can now login." });
+}));
+
+// Forgot Password - Resend OTP
+app.post("/forgot-password/resend-otp", otpLimiter, asyncHandler(async (req, res) => {
+  console.log('\n🔍 ===== FORGOT PASSWORD: RESEND OTP REQUEST =====');
+  
+  let { phone } = req.body;
+  
+  if (typeof sanitizeInput === 'function') {
+    phone = sanitizeInput(phone);
+  } else {
+    phone = phone?.trim();
+  }
+
+  if (!phone) {
+    console.log('❌ No phone provided');
+    throw new AppError("Phone number is required", 400);
+  }
+
+  console.log('🔍 Looking for existing OTP record for phone:', phone);
+
+  // Find existing forgot-password OTP record to get userId
+  const existingOtp = await Otp.findOne({ 
+    phone, 
+    type: "forgot-password",
+    expiresAt: { $gt: new Date() }
+  });
+
+  if (!existingOtp || !existingOtp.userId) {
+    console.log('❌ No active password reset session found');
+    throw new AppError("No active password reset session found. Please start over.", 400);
+  }
+
+  console.log('✅ Found existing session for user:', existingOtp.userId);
+
+  // Delete old OTP
+  console.log('🗑️ Deleting old OTP...');
+  await Otp.deleteOne({ _id: existingOtp._id });
+
+  // Create new OTP with same userId
+  console.log('📱 Creating new OTP...');
+  const otp = await createOTP(phone, "forgot-password", {
+    userId: existingOtp.userId
+  });
+
+  console.log('✅ New OTP created:', otp);
+  console.log('===== FORGOT PASSWORD: RESEND COMPLETE =====\n');
+
+  res.json({
+    success: true,
+    message: "OTP resent successfully",
+    ...(process.env.NODE_ENV === 'development' && !CONFIG.ENABLE_SMS && { _dev_otp: otp })
+  });
 }));
 
 /* ===================== HEALTH CHECK ===================== */

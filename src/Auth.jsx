@@ -4,7 +4,7 @@ import "./Auth.css";
 const API = "http://localhost:5001";
 
 export default function Auth({ onLogin }) {
-  const [mode, setMode] = useState("login"); // 'login' or 'signup'
+  const [mode, setMode] = useState("login"); // 'login', 'signup', or 'forgot'
   const [step, setStep] = useState(1); // 1: credentials, 2: OTP
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -300,6 +300,107 @@ export default function Auth({ onLogin }) {
     }
   };
 
+  // Forgot Password - Send OTP
+  const handleForgotSendOTP = async () => {
+    setError("");
+    setMessage("");
+
+    console.log('🚀 Starting forgot password OTP send...');
+
+    if (!username.trim()) {
+      setError("Username is required");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      console.log('📞 Sending forgot password OTP for:', username.trim());
+
+      const data = await apiCall("/forgot-password/send-otp", {
+        username: username.trim()
+      });
+
+      console.log('✅ Forgot password OTP sent successfully:', data);
+
+      // Store phone from server response
+      if (data.phone) {
+        setServerPhone(data.phone);
+        setPhone(data.phone);
+        console.log('💾 Stored server phone:', data.phone);
+      }
+
+      setPhoneHint(data.phoneHint || "****");
+      setMessage(data.message || "✅ OTP sent to your phone!");
+      setStep(2);
+    } catch (err) {
+      console.error('❌ Forgot password OTP send failed:', err);
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Forgot Password - Verify OTP and Reset
+  const handleForgotVerifyOTP = async () => {
+    if (otp.length !== 6) {
+      setError("Please enter a valid 6-digit OTP");
+      return;
+    }
+
+    const passwordError = validatePassword(password);
+    if (passwordError) {
+      setError(passwordError);
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+
+    try {
+      const phoneToUse = serverPhone || normalizePhone(phone);
+      
+      if (!phoneToUse) {
+        throw new Error("Phone number not available. Please go back and try again.");
+      }
+
+      console.log('🔐 Verifying forgot password OTP:', {
+        phone: phoneToUse,
+        otp: otp.trim(),
+        hasNewPassword: !!password
+      });
+
+      const data = await apiCall("/forgot-password/verify-otp", {
+        phone: phoneToUse,
+        otp: otp.trim(),
+        newPassword: password
+      });
+
+      console.log('✅ Password reset successful:', data);
+
+      setMessage(data.message || "✅ Password reset successful! Redirecting to login...");
+      
+      setTimeout(() => {
+        // Reset to login mode
+        setMode("login");
+        setStep(1);
+        setUsername("");
+        setPassword("");
+        setPhone("");
+        setOtp("");
+        setError("");
+        setMessage("");
+        setPhoneHint("");
+        setServerPhone("");
+      }, 1500);
+    } catch (err) {
+      console.error('❌ Password reset failed:', err);
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Resend OTP
   const handleResendOTP = async () => {
     setLoading(true);
@@ -307,7 +408,15 @@ export default function Auth({ onLogin }) {
     setMessage("");
 
     try {
-      const endpoint = mode === "signup" ? "/signup/resend-otp" : "/login/resend-otp";
+      let endpoint;
+      if (mode === "signup") {
+        endpoint = "/signup/resend-otp";
+      } else if (mode === "forgot") {
+        endpoint = "/forgot-password/resend-otp";
+      } else {
+        endpoint = "/login/resend-otp";
+      }
+
       const phoneToUse = serverPhone || normalizePhone(phone);
       
       if (!phoneToUse) {
@@ -346,6 +455,7 @@ export default function Auth({ onLogin }) {
     setMessage("");
     setPhoneHint("");
     setServerPhone("");
+    setShowPassword(false);
   };
 
   // Go back
@@ -355,6 +465,20 @@ export default function Auth({ onLogin }) {
     setOtp("");
     setError("");
     setMessage("");
+  };
+
+  // Get current form handler
+  const getFormSubmitHandler = () => {
+    if (mode === "login") return handleLoginSendOTP;
+    if (mode === "signup") return handleSignupSendOTP;
+    if (mode === "forgot") return handleForgotSendOTP;
+  };
+
+  // Get verify handler
+  const getVerifyHandler = () => {
+    if (mode === "login") return handleLoginVerifyOTP;
+    if (mode === "signup") return handleSignupVerifyOTP;
+    if (mode === "forgot") return handleForgotVerifyOTP;
   };
 
   return (
@@ -369,13 +493,14 @@ export default function Auth({ onLogin }) {
         <div className="auth-header">
           <div className="auth-logo">🔐</div>
           <h1 className="auth-title">
-            {mode === "login" ? "Welcome Back" : "Create Account"}
+            {mode === "login" && "Welcome Back"}
+            {mode === "signup" && "Create Account"}
+            {mode === "forgot" && "Reset Password"}
           </h1>
           <p className="auth-subtitle">
-            {mode === "login" 
-              ? "Secure child location tracking with JWT authentication" 
-              : "Join our secure parental control platform"
-            }
+            {mode === "login" && "Secure child location tracking with JWT authentication"}
+            {mode === "signup" && "Join our secure parental control platform"}
+            {mode === "forgot" && "We'll send you a code to reset your password"}
           </p>
         </div>
 
@@ -383,8 +508,28 @@ export default function Auth({ onLogin }) {
         {step === 1 && (
           <form className="auth-form" onSubmit={(e) => {
             e.preventDefault();
-            mode === "login" ? handleLoginSendOTP() : handleSignupSendOTP();
+            getFormSubmitHandler()();
           }}>
+            {mode === "login" && (
+              <div style={{ textAlign: "right", marginBottom: "10px" }}>
+                <button
+                  type="button"
+                  className="auth-link"
+                  onClick={() => {
+                    setMode("forgot");
+                    setStep(1);
+                    setPassword("");
+                    setOtp("");
+                    setError("");
+                    setMessage("");
+                  }}
+                  disabled={loading}
+                >
+                  Forgot password?
+                </button>
+              </div>
+            )}
+
             <div className="input-group">
               <label className="input-label">
                 Username <span className="required">*</span>
@@ -407,37 +552,39 @@ export default function Auth({ onLogin }) {
               )}
             </div>
 
-            <div className="input-group">
-              <label className="input-label">
-                Password <span className="required">*</span>
-              </label>
-              <div className="password-input-wrapper">
-                <input
-                  type={showPassword ? "text" : "password"}
-                  value={password}
-                  onChange={(e) => {
-                    setPassword(e.target.value);
-                    setError("");
-                  }}
-                  placeholder="Enter your password"
-                  className="auth-input"
-                  disabled={loading}
-                  autoComplete={mode === "login" ? "current-password" : "new-password"}
-                  required
-                />
-                <button
-                  type="button"
-                  className="password-toggle"
-                  onClick={() => setShowPassword(!showPassword)}
-                  tabIndex={-1}
-                >
-                  {showPassword ? "👁️" : "👁️‍🗨️"}
-                </button>
+            {mode !== "forgot" && (
+              <div className="input-group">
+                <label className="input-label">
+                  Password <span className="required">*</span>
+                </label>
+                <div className="password-input-wrapper">
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    value={password}
+                    onChange={(e) => {
+                      setPassword(e.target.value);
+                      setError("");
+                    }}
+                    placeholder="Enter your password"
+                    className="auth-input"
+                    disabled={loading}
+                    autoComplete={mode === "login" ? "current-password" : "new-password"}
+                    required
+                  />
+                  <button
+                    type="button"
+                    className="password-toggle"
+                    onClick={() => setShowPassword(!showPassword)}
+                    tabIndex={-1}
+                  >
+                    {showPassword ? "👁️" : "👁️‍🗨️"}
+                  </button>
+                </div>
+                {mode === "signup" && password && validatePassword(password) && (
+                  <small className="input-error-hint">{validatePassword(password)}</small>
+                )}
               </div>
-              {mode === "signup" && password && validatePassword(password) && (
-                <small className="input-error-hint">{validatePassword(password)}</small>
-              )}
-            </div>
+            )}
 
             {mode === "signup" && (
               <div className="input-group">
@@ -494,21 +641,45 @@ export default function Auth({ onLogin }) {
                 validateUsername(username) || validatePassword(password) || validatePhone(phone)
               ))}
             >
-              {loading ? "⏳ Please wait..." : (mode === "login" ? "Continue to OTP" : "Send OTP")}
+              {loading ? "⏳ Please wait..." : (
+                mode === "login" ? "Continue to OTP" : 
+                mode === "signup" ? "Send OTP" : 
+                "Send Reset Code"
+              )}
             </button>
 
             <div className="auth-divider">
               <span>or</span>
             </div>
 
-            <button
-              type="button"
-              className="auth-btn auth-btn-secondary"
-              onClick={switchMode}
-              disabled={loading}
-            >
-              {mode === "login" ? "Create new account" : "Already have an account? Login"}
-            </button>
+            {mode === "forgot" ? (
+              <button
+                type="button"
+                className="auth-btn auth-btn-secondary"
+                onClick={() => {
+                  setMode("login");
+                  setStep(1);
+                  setUsername("");
+                  setPassword("");
+                  setPhone("");
+                  setOtp("");
+                  setError("");
+                  setMessage("");
+                }}
+                disabled={loading}
+              >
+                ← Back to Login
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="auth-btn auth-btn-secondary"
+                onClick={switchMode}
+                disabled={loading}
+              >
+                {mode === "login" ? "Create new account" : "Already have an account? Login"}
+              </button>
+            )}
           </form>
         )}
 
@@ -527,6 +698,57 @@ export default function Auth({ onLogin }) {
                 </p>
               )}
             </div>
+
+            {mode === "forgot" && (
+              <div className="input-group">
+                <label className="input-label">
+                  New Password <span className="required">*</span>
+                </label>
+                <div className="password-input-wrapper">
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    value={password}
+                    onChange={(e) => {
+                      setPassword(e.target.value);
+                      setError("");
+                    }}
+                    placeholder="Enter your new password"
+                    className="auth-input"
+                    disabled={loading}
+                    autoComplete="new-password"
+                    required
+                  />
+                  <button
+                    type="button"
+                    className="password-toggle"
+                    onClick={() => setShowPassword(!showPassword)}
+                    tabIndex={-1}
+                  >
+                    {showPassword ? "👁️" : "👁️‍🗨️"}
+                  </button>
+                </div>
+                {password && validatePassword(password) && (
+                  <small className="input-error-hint">{validatePassword(password)}</small>
+                )}
+                <div className="password-requirements" style={{marginTop: '10px'}}>
+                  <p className="requirements-title">Password must contain:</p>
+                  <ul className="requirements-list">
+                    <li className={password.length >= 8 ? "requirement-met" : ""}>
+                      {password.length >= 8 ? "✓" : "○"} At least 8 characters
+                    </li>
+                    <li className={/[A-Z]/.test(password) ? "requirement-met" : ""}>
+                      {/[A-Z]/.test(password) ? "✓" : "○"} One uppercase letter
+                    </li>
+                    <li className={/[a-z]/.test(password) ? "requirement-met" : ""}>
+                      {/[a-z]/.test(password) ? "✓" : "○"} One lowercase letter
+                    </li>
+                    <li className={/[0-9]/.test(password) ? "requirement-met" : ""}>
+                      {/[0-9]/.test(password) ? "✓" : "○"} One number
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            )}
 
             <div className="input-group">
               <label className="input-label">
@@ -556,11 +778,13 @@ export default function Auth({ onLogin }) {
             {message && <div className="auth-success">{message}</div>}
 
             <button
-              onClick={mode === "login" ? handleLoginVerifyOTP : handleSignupVerifyOTP}
+              onClick={getVerifyHandler()}
               className="auth-btn auth-btn-primary"
-              disabled={loading || otp.length !== 6}
+              disabled={loading || otp.length !== 6 || (mode === "forgot" && validatePassword(password))}
             >
-              {loading ? "⏳ Verifying..." : "✓ Verify & Continue"}
+              {loading ? "⏳ Verifying..." : (
+                mode === "forgot" ? "✓ Reset Password" : "✓ Verify & Continue"
+              )}
             </button>
 
             <button
@@ -580,15 +804,6 @@ export default function Auth({ onLogin }) {
             </button>
           </div>
         )}
-
-        {/* Security Badge */}
-        <div className="auth-security-badge">
-          <div className="security-icon">🛡️</div>
-          <div className="security-text">
-            <strong>Secure Authentication</strong>
-            <p>Protected by JWT tokens, AES-256 encryption, and multi-factor authentication</p>
-          </div>
-        </div>
       </div>
     </div>
   );
