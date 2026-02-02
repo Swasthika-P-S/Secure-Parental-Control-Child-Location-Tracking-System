@@ -239,14 +239,14 @@
 <body>
   <div class="container">
     <div class="header">
-      <h1>🔐 Secure Child Location Tracking</h1>
+      <h1>Secure Child Location Tracking</h1>
       <p>JWT-authenticated, end-to-end encrypted location sharing</p>
     </div>
 
     <div class="content">
       <!-- Step 1: Parent Requests Tracking -->
       <div id="step1" class="step">
-        <h3>📍 Step 1: Parent Requests Tracking</h3>
+        <h3> Parent Requests Tracking</h3>
         <p style="color: #666; margin-bottom: 20px; font-size: 14px;">
           Enter parent and child phone numbers, then click "Request Tracking"
         </p>
@@ -272,7 +272,7 @@
         </div>
 
         <button class="btn btn-primary" id="requestBtn" onclick="requestTracking()">
-          <span>📱 Request Tracking (Send OTP to Parent)</span>
+          <span>Request Tracking (Send OTP to Parent)</span>
         </button>
 
         <div id="step1Error" class="alert alert-error hidden"></div>
@@ -281,13 +281,13 @@
 
       <!-- Step 2: Child Verifies and Shares Location -->
       <div id="step2" class="step hidden">
-        <h3>👶 Step 2: Child Verifies Parent's OTP</h3>
+        <h3>Child Verifies Parent's OTP</h3>
         <p style="color: #666; margin-bottom: 20px; font-size: 14px;">
           Parent receives OTP. Child enters parent's phone and OTP to verify consent.
         </p>
 
         <div class="alert alert-info">
-          <strong>🔐 Security Check:</strong> The OTP sent to parent's phone (<span id="parentPhoneHint"></span>) must be entered below.
+          <strong> Security Check:</strong> The OTP sent to parent's phone (<span id="parentPhoneHint"></span>) must be entered below.
         </div>
 
         <div class="form-group">
