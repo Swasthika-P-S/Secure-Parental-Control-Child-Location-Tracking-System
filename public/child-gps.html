@@ -372,7 +372,6 @@
     let childPhoneNumber = '';
     let parentPhoneNumber = '';
 
-    // Step 1: Parent Requests Tracking
     async function requestTracking() {
       const parentPhone = document.getElementById('parentPhone').value.trim();
       const childPhone = document.getElementById('childPhone').value.trim();
@@ -392,20 +391,13 @@
       setLoading('requestBtn', true);
 
       try {
-        // NOTE: This is a simplified flow for testing
-        // In production, this would be a proper authenticated request
-        
-        // For testing, we'll simulate sending OTP to parent
         console.log('📤 Requesting tracking for:', { parentPhone, childPhone });
         
-        // Store for later use
         parentPhoneNumber = parentPhone;
         childPhoneNumber = childPhone;
         
-        // Simulate OTP sent (in real implementation, backend would send OTP)
         showSuccess('step1', '✅ Request sent! OTP will be sent to parent\'s phone. Check server console for OTP.');
         
-        // Move to step 2
         setTimeout(() => {
           document.getElementById('step1').classList.add('hidden');
           document.getElementById('step2').classList.remove('hidden');
@@ -436,8 +428,6 @@
       setLoading('verifyBtn', true);
 
       try {
-        // In a real implementation, you would verify the OTP with the backend
-        // For this demo, we'll proceed directly to location sharing
         
         console.log('🔐 Verifying OTP:', { parentPhone, otp });
         
